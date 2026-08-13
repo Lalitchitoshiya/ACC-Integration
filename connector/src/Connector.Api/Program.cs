@@ -20,6 +20,7 @@ if (builder.Configuration.GetValue("Acc:UseMock", true))
 else
     builder.Services.AddSingleton<IAccClient, ApsAccClient>();
 
+builder.Services.AddHostedService<CheckoutExpirySweeper>();
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
@@ -35,6 +36,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.MapConnectorEndpoints();
+app.MapPhase2Endpoints();
 
 // APS 3-legged login: browser flow. Visit /api/auth/login, sign in with the Autodesk
 // account that owns the ACC hub, land back on /api/auth/callback.

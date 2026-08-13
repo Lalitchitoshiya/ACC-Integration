@@ -168,6 +168,16 @@ public static class Endpoints
             db.ModelVersions.Add(version);
             await Audit(db, model.ProjectId, user, "version.uploaded", modelId, version.Id,
                 new { versionNumber, changeDescription });
+
+            // FR2.4 (specs/02): checking in a new version auto-releases the uploader's checkout.
+            var checkout = await db.CheckoutStates.FirstOrDefaultAsync(c => c.ModelId == modelId, ct);
+            if (checkout is not null && checkout.CheckedOutById == user.Id)
+            {
+                db.CheckoutStates.Remove(checkout);
+                await Audit(db, model.ProjectId, user, "checkout.released", modelId, version.Id,
+                    new { releasedBy = "checkin" });
+            }
+
             await db.SaveChangesAsync(ct);
 
             return Results.Json(new { version = VersionDto(version) }, JsonOpts, statusCode: 201);
