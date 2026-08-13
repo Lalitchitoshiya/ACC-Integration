@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Connector.Api")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+552a98cf0b288b99f1cc65442e093ffed6074a34")]
 [assembly: System.Reflection.AssemblyProductAttribute("Connector.Api")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Connector.Api")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

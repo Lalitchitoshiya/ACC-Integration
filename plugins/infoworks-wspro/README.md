@@ -1,4 +1,9 @@
-# InfoWorks WS Pro → ACC Upload Script
+# InfoWorks WS Pro ⇄ ACC Scripts
+
+Two scripts complete the round-trip: `upload_to_acc.rb` (WS Pro → ACC) and
+`download_from_acc.rb` (ACC → local disk, ready for WS Pro import).
+
+# Upload Script (upload_to_acc.rb)
 
 Ruby script run inside WS Pro that exports the open network and uploads it to the
 Connector API, which versions it into ACC Docs. This is the Phase 1 desktop-plugin
@@ -39,6 +44,40 @@ prefixed with a `table` column). This guarantees nothing is silently dropped whi
 the field-level mapping to the metadata schema
 ([specs/13-metadata-schema.md](../../specs/13-metadata-schema.md)) is validated
 against real WS Pro exports — the open action item from that spec.
+
+# Download Script (download_from_acc.rb)
+
+Fetches the latest **approved** version of the model from ACC. If no version has
+been approved yet (review workflow lands in Phase 2), it downloads the latest
+version and prints a clear WARNING that it's unapproved work-in-progress —
+mirroring the connector's FR3.2 behavior, never silently substituting.
+
+## Use
+
+1. Edit the CONFIG block (`MODEL_ID`, `USER_EMAIL`) — same values as the upload script.
+2. Run it inside WS Pro (**Network → Run Ruby Script…**) — no network needs to be open.
+3. The file is saved to `Downloads\acc-models\model_v<N>_<status>.csv` and the
+   output shows version number, review status, change description, and network
+   stats (node/link counts) from the stored metadata.
+4. To bring it into WS Pro: import via the **Open Data Import Centre** against the
+   sectioned CSV, or open the file to inspect what changed.
+
+# Open-from-ACC Script (open_from_acc.rb)
+
+The closest thing to "File → Open from ACC" WS Pro allows: downloads the latest
+version AND writes its rows directly into the currently open network via the
+Exchange API — no Open Data Import Centre configuration needed.
+
+## Use
+
+1. In the database tree: right-click a Model Group → **New → Network** (empty).
+2. **Open** that new empty network (double-click).
+3. **Network → Run Ruby Script…** → `open_from_acc.rb`.
+4. Refresh the GeoPlan — the model from ACC appears.
+
+Safety: the script refuses to run if the open network already contains nodes or
+pipes — it only ever fills an empty network, never merges into or overwrites work.
+Derived/read-only fields (flags, spatial blobs) are skipped and reported.
 
 ## Known limitations (Phase 1)
 

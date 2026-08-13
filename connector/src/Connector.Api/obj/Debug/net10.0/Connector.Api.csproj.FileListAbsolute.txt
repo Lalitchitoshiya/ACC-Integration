@@ -120,3 +120,4 @@ D:\ACC Integration\connector\src\Connector.Api\obj\Debug\net10.0\refint\Connecto
 D:\ACC Integration\connector\src\Connector.Api\obj\Debug\net10.0\Connector.Api.pdb
 D:\ACC Integration\connector\src\Connector.Api\obj\Debug\net10.0\Connector.Api.genruntimeconfig.cache
 D:\ACC Integration\connector\src\Connector.Api\obj\Debug\net10.0\ref\Connector.Api.dll
+D:\ACC Integration\connector\src\Connector.Api\obj\Debug\net10.0\Connector.Api.sourcelink.json
