@@ -1,0 +1,6 @@
+@Connector.Api_HostAddress = http://localhost:5010
+
+GET {{Connector.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
