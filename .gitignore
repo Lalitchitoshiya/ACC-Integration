@@ -1,0 +1,11 @@
+﻿# .NET
+[Bb]in/
+[Oo]bj/
+*.user
+
+# Secrets / tokens
+.aps-refresh-token
+
+# OS
+Thumbs.db
+.DS_Store
