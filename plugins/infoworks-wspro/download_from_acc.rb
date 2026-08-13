@@ -13,9 +13,14 @@ require 'fileutils'
 
 # ----------------------------- CONFIG ---------------------------------------
 CONNECTOR_URL = 'http://localhost:5000'
-MODEL_ID      = '42ade9e2-621d-44f4-adbc-5b2b5cb922df' # "My INP Network"
 USER_EMAIL    = 'modeler@demo.local'
 DOWNLOAD_DIR  = File.join(ENV['USERPROFILE'] || Dir.home, 'Downloads', 'acc-models')
+
+# Which model to download — select by NAME (matched against your projects/models
+# in the connector). Leave blank ('') to list everything available and stop, so
+# you can see the names, then paste one here.
+MODEL_NAME    = 'My INP Network'
+PROJECT_NAME  = ''   # optional — only needed if the same model name exists in two projects
 # -----------------------------------------------------------------------------
 
 def fail_out(msg)
@@ -33,6 +38,34 @@ def get_json(path)
   fail_out("Connector returned HTTP #{res.code} for #{path}: #{res.body}") unless res.code.to_i == 200
   JSON.parse(res.body)
 end
+
+# --- 0. Resolve MODEL_NAME → model id across all your projects ----------------
+projects = get_json('/api/v1/projects')['projects']
+fail_out('You are not a member of any project.') if projects.empty?
+
+if MODEL_NAME.to_s.strip.empty?
+  puts 'Available projects and models (set MODEL_NAME in the CONFIG block to one of these):'
+  projects.each do |p|
+    puts "  Project: #{p['name']}"
+    p['models'].each { |m| puts "    - #{m['name']}" }
+  end
+  fail_out('MODEL_NAME is blank — pick one from the list above.')
+end
+
+candidates = projects.flat_map do |p|
+  next [] if !PROJECT_NAME.to_s.strip.empty? && p['name'] != PROJECT_NAME
+  p['models'].select { |m| m['name'].casecmp?(MODEL_NAME) }.map { |m| [p, m] }
+end
+
+fail_out("No model named '#{MODEL_NAME}' found#{PROJECT_NAME.empty? ? '' : " in project '#{PROJECT_NAME}'"} — run with MODEL_NAME='' to list options.") if candidates.empty?
+if candidates.length > 1
+  names = candidates.map { |p, _| p['name'] }.join(', ')
+  fail_out("Model '#{MODEL_NAME}' exists in multiple projects (#{names}) — set PROJECT_NAME to disambiguate.")
+end
+
+project, model = candidates.first
+MODEL_ID = model['id']
+puts "Selected: '#{model['name']}' in project '#{project['name']}'"
 
 # --- 1. Resolve which version to fetch (latest approved, else flagged fallback) ---
 latest = get_json("/api/v1/models/#{MODEL_ID}/versions/latest-approved")

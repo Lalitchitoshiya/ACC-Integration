@@ -17,6 +17,31 @@ public static class Endpoints
     {
         var api = app.MapGroup("/api/v1");
 
+        // ---- Projects ----
+
+        // List projects the current user is a member of, with their models — lets desktop
+        // scripts resolve a model by name instead of hardcoding ids (multi-project support).
+        api.MapGet("/projects", async (
+            ConnectorDbContext db, CurrentUserService current, CancellationToken ct) =>
+        {
+            var user = await current.GetUserAsync(ct);
+            if (user is null) return ApiError.Unauthenticated();
+
+            var projectIds = await db.ProjectMemberships
+                .Where(m => m.UserId == user.Id).Select(m => m.ProjectId).ToListAsync(ct);
+            var projects = await db.Projects.Where(p => projectIds.Contains(p.Id))
+                .Include(p => p.Models).OrderBy(p => p.Name).ToListAsync(ct);
+
+            return Results.Json(new
+            {
+                projects = projects.Select(p => new
+                {
+                    id = p.Id, name = p.Name, accProjectUrn = p.AccProjectUrn,
+                    models = p.Models.OrderBy(m => m.Name).Select(ModelDto)
+                })
+            }, JsonOpts);
+        });
+
         // ---- Models ----
 
         api.MapPost("/projects/{projectId:guid}/models", async (
