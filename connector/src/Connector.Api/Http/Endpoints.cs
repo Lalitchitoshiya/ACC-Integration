@@ -245,6 +245,12 @@ public static class Endpoints
             try
             {
                 var url = await acc.GetDownloadUrlAsync(project!.AccProjectUrn, version.AccItemVersionUrn, ct);
+
+                // Downloads are part of the "who did what" audit story (FR8.3) — log the read.
+                await Audit(db, version.Model.ProjectId, user, "version.downloaded",
+                    version.ModelId, version.Id, new { version.VersionNumber });
+                await db.SaveChangesAsync(ct);
+
                 return Results.Redirect(url);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
