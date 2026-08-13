@@ -35,6 +35,9 @@ if (app.Environment.IsDevelopment())
     await DevSeed.EnsureSeededAsync(db);
 }
 
+app.UseDefaultFiles(); // serves wwwroot/index.html at / — the dashboard
+app.UseStaticFiles();
+
 app.MapConnectorEndpoints();
 app.MapPhase2Endpoints();
 

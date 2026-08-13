@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ACC Water Connector</title>
+<style>
+  :root {
+    --bg: #f5f7fa; --card: #ffffff; --ink: #1a2332; --muted: #64748b;
+    --line: #e2e8f0; --accent: #0066cc; --accent-ink: #ffffff;
+    --draft: #94a3b8; --inreview: #d97706; --approved: #16a34a; --rejected: #dc2626;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { font: 14px/1.5 "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--ink); }
+  header { background: #0b1f3a; color: #fff; padding: 14px 24px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 17px; font-weight: 600; }
+  header .tag { font-size: 11px; background: #1d4ed8; padding: 2px 8px; border-radius: 10px; }
+  header .spacer { flex: 1; }
+  select, button { font: inherit; }
+  select { padding: 6px 10px; border-radius: 6px; border: 1px solid var(--line); }
+  main { max-width: 1100px; margin: 24px auto; padding: 0 16px; display: grid; gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+  .card h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 12px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; color: #fff; }
+  .badge.Draft { background: var(--draft); } .badge.InReview { background: var(--inreview); }
+  .badge.Approved { background: var(--approved); } .badge.Rejected { background: var(--rejected); }
+  .btn { border: 1px solid var(--line); background: #fff; color: var(--ink); padding: 5px 12px; border-radius: 6px; cursor: pointer; margin-right: 6px; }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .btn.primary:hover { filter: brightness(1.1); color: var(--accent-ink); }
+  .muted { color: var(--muted); font-size: 12px; }
+  .meta-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+  .chip { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; font-size: 12px; }
+  .checkout-banner { padding: 10px 14px; border-radius: 8px; background: #fef3c7; border: 1px solid #f59e0b; margin-bottom: 12px; font-size: 13px; }
+  .toast { position: fixed; bottom: 20px; right: 20px; background: #0b1f3a; color: #fff; padding: 12px 18px; border-radius: 8px; opacity: 0; transition: opacity .3s; max-width: 420px; }
+  .toast.show { opacity: 1; }
+  .row-flex { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>ACC Water Connector</h1><span class="tag">Phase 2</span>
+  <span class="spacer"></span>
+  <label class="muted" style="color:#cbd5e1">Acting as&nbsp;</label>
+  <select id="user">
+    <option value="admin@demo.local">Ada Admin (Admin)</option>
+    <option value="modeler@demo.local">Asha Modeler (Modeler)</option>
+    <option value="reviewer@demo.local">Ravi Reviewer (Reviewer)</option>
+    <option value="viewer@demo.local">Vik Viewer (Viewer)</option>
+  </select>
+</header>
+<main>
+  <div class="card">
+    <h2>Models</h2>
+    <div class="row-flex">
+      <select id="model"></select>
+      <span id="acc-link" class="muted"></span>
+    </div>
+    <div id="checkout-area" style="margin-top:12px"></div>
+  </div>
+  <div class="card">
+    <h2>Version history</h2>
+    <div id="versions"></div>
+  </div>
+  <div class="card">
+    <h2>Audit trail <span id="audit-export" style="font-weight:normal;text-transform:none"></span></h2>
+    <div id="audit"></div>
+  </div>
+</main>
+<div id="toast" class="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let projects = [], currentModel = null;
+
+const hdrs = () => ({ 'X-Dev-User': $('user').value, 'Content-Type': 'application/json' });
+async function api(path, opts = {}) {
+  const res = await fetch('/api/v1' + path, { headers: hdrs(), ...opts });
+  const body = res.status === 204 ? null : await res.json().catch(() => null);
+  if (!res.ok) throw (body || { message: 'HTTP ' + res.status });
+  return body;
+}
+function toast(msg, ok = true) {
+  const t = $('toast'); t.textContent = msg; t.style.background = ok ? '#14532d' : '#7f1d1d';
+  t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 3500);
+}
+const fmtDate = s => new Date(s).toLocaleString();
+
+async function loadProjects() {
+  projects = (await api('/projects')).projects;
+  const sel = $('model'); sel.innerHTML = '';
+  for (const p of projects) for (const m of p.models)
+    sel.add(new Option(`${p.name} / ${m.name}`, m.id));
+  if (sel.options.length) { currentModel = sel.value; await refresh(); }
+}
+
+async function refresh() {
+  currentModel = $('model').value;
+  await Promise.all([loadCheckout(), loadVersions(), loadAudit()]);
+}
+
+async function loadCheckout() {
+  const area = $('checkout-area');
+  try {
+    const { checkoutState: c } = await api(`/models/${currentModel}/checkout`);
+    area.innerHTML = c
+      ? `<div class="checkout-banner">🔒 Checked out by <b>${c.checkedOutBy.name}</b> since ${fmtDate(c.checkedOutAt)} (expires ${fmtDate(c.expiresAt)})
+         <button class="btn" onclick="releaseCheckout()">Release</button></div>`
+      : `<button class="btn" onclick="acquireCheckout(false)">Check out this model</button><span class="muted"> — signals to others you're editing it</span>`;
+  } catch (e) { area.innerHTML = `<span class="muted">${e.message || ''}</span>`; }
+}
+async function acquireCheckout(override) {
+  try {
+    await api(`/models/${currentModel}/checkout`, { method: 'POST', body: JSON.stringify({ override }) });
+    toast('Checked out.'); loadCheckout();
+  } catch (e) {
+    if (e.message === 'checked_out' && e.details?.holder &&
+        confirm(`Held by ${e.details.holder.name} since ${fmtDate(e.details.checkedOutAt)}.\nOverride their checkout? (this is logged)`))
+      return acquireCheckout(true);
+    toast(e.message || 'Checkout failed', false);
+  }
+}
+async function releaseCheckout() {
+  try { await api(`/models/${currentModel}/checkout`, { method: 'DELETE' }); toast('Released.'); loadCheckout(); }
+  catch (e) { toast(e.message || 'Release failed', false); }
+}
+
+async function loadVersions() {
+  const el = $('versions');
+  try {
+    const [{ versions }, latest] = await Promise.all([
+      api(`/models/${currentModel}/versions`),
+      api(`/models/${currentModel}/versions/latest-approved`)
+    ]);
+    const approvedId = latest.version?.id;
+    if (!versions.length) { el.innerHTML = '<span class="muted">No versions uploaded yet.</span>'; return; }
+    el.innerHTML = `<table><tr><th>v</th><th>Status</th><th>Uploaded</th><th>Description</th><th>Network</th><th>Actions</th></tr>` +
+      versions.map(v => {
+        const n = v.metadata?.network;
+        const meta = n ? `<div class="meta-chips"><span class="chip">${n.nodes.total} nodes</span><span class="chip">${n.links.total} links</span><span class="chip">${(n.totalPipeLength/1000).toFixed(1)} km pipe</span></div>` : '<span class="muted">no metadata</span>';
+        const star = v.id === approvedId ? ' ⭐' : '';
+        const acts = [];
+        if (v.reviewStatus === 'Draft') acts.push(`<button class="btn" onclick="act('${v.id}','submit')">Submit for review</button>`);
+        if (v.reviewStatus === 'InReview') {
+          acts.push(`<button class="btn primary" onclick="act('${v.id}','approve')">Approve</button>`);
+          acts.push(`<button class="btn" onclick="rejectVersion('${v.id}')">Reject</button>`);
+        }
+        acts.push(`<button class="btn" onclick="showHistory('${v.id}')">History</button>`);
+        acts.push(`<button class="btn" onclick="downloadVersion('${v.id}', ${v.versionNumber})">⬇</button>`);
+        return `<tr><td><b>${v.versionNumber}</b>${star}</td>
+          <td><span class="badge ${v.reviewStatus}">${v.reviewStatus}</span></td>
+          <td class="muted">${fmtDate(v.uploadedAt)}</td>
+          <td>${v.changeDescription}</td><td>${meta}</td><td>${acts.join('')}</td></tr>`;
+      }).join('') + '</table>';
+  } catch (e) { el.innerHTML = `<span class="muted">${e.message || 'Load failed'}</span>`; }
+}
+async function act(versionId, action) {
+  try { await api(`/versions/${versionId}/${action}`, { method: 'POST', body: '{}' }); toast(`Version ${action}ed.`); refresh(); }
+  catch (e) { toast(e.message || `${action} failed`, false); }
+}
+async function rejectVersion(versionId) {
+  const comment = prompt('Rejection comment (required):');
+  if (comment === null) return;
+  try {
+    await api(`/versions/${versionId}/reject`, { method: 'POST', body: JSON.stringify({ comment }) });
+    toast('Version rejected.'); refresh();
+  } catch (e) { toast(e.message || 'Reject failed', false); }
+}
+async function downloadVersion(versionId, versionNumber) {
+  // The download endpoint 302s to a signed ACC URL; fetch with auth header, follow, save.
+  const res = await fetch(`/api/v1/versions/${versionId}/download`, { headers: hdrs() });
+  if (!res.ok) return toast('Download failed', false);
+  const blob = await res.blob(); const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = `model_v${versionNumber}.csv`; a.click();
+  toast(`Version ${versionNumber} downloaded from ACC.`);
+}
+async function showHistory(versionId) {
+  try {
+    const { reviewEvents } = await api(`/versions/${versionId}/review-events`);
+    alert(reviewEvents.length
+      ? reviewEvents.map(e => `${fmtDate(e.timestamp)}  ${e.action}  by ${e.actor.name}${e.comment ? `\n    "${e.comment}"` : ''}`).join('\n')
+      : 'No review events yet — still an unsubmitted draft.');
+  } catch (e) { toast(e.message || 'History failed', false); }
+}
+
+async function loadAudit() {
+  const el = $('audit');
+  const project = projects.find(p => p.models.some(m => m.id === currentModel));
+  if (!project) { el.innerHTML = ''; return; }
+  $('audit-export').innerHTML = `— <a href="#" onclick="exportAudit('${project.id}');return false">download CSV</a>`;
+  try {
+    const { events } = await api(`/projects/${project.id}/audit-events`);
+    el.innerHTML = `<table><tr><th>When</th><th>Event</th><th>Actor</th><th>Detail</th></tr>` +
+      events.slice(-25).reverse().map(e =>
+        `<tr><td class="muted">${fmtDate(e.timestamp)}</td><td>${e.eventType}</td>
+         <td>${e.actor?.name ?? ''}</td><td class="muted">${e.payload ? JSON.stringify(e.payload) : ''}</td></tr>`).join('') + '</table>';
+  } catch (e) { el.innerHTML = `<span class="muted">${e.message || 'Load failed'}</span>`; }
+}
+async function exportAudit(projectId) {
+  const res = await fetch(`/api/v1/projects/${projectId}/audit-events/export`, { headers: hdrs() });
+  if (!res.ok) return toast((await res.json()).message || 'Export forbidden', false);
+  const blob = await res.blob(); const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'audit.csv'; a.click();
+}
+
+$('user').onchange = refresh;
+$('model').onchange = refresh;
+loadProjects().catch(e => toast(e.message || 'Failed to load — is the API running?', false));
+</script>
+</body>
+</html>
