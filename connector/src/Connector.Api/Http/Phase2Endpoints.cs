@@ -181,6 +181,21 @@ public static class Phase2Endpoints
             }, JsonOpts);
         });
 
+        // ---- Activity cursor ----
+        // Cheap "anything new?" endpoint the dashboard polls: returns the latest audit
+        // event id for the project. Any state change (upload, download, checkout, review)
+        // writes an audit row, so a bumped id == something happened worth refreshing for.
+        api.MapGet("/projects/{projectId:guid}/activity", async (
+            Guid projectId, ConnectorDbContext db, CurrentUserService current, CancellationToken ct) =>
+        {
+            var user = await current.GetUserAsync(ct);
+            if (user is null) return ApiError.Unauthenticated();
+            if (await current.GetRoleAsync(user.Id, projectId, ct) is null) return ApiError.Forbidden();
+            var lastId = await db.AuditEvents.Where(e => e.ProjectId == projectId)
+                .MaxAsync(e => (long?)e.Id, ct) ?? 0;
+            return Results.Json(new { lastEventId = lastId }, JsonOpts);
+        });
+
         // ---- Audit query + CSV export (specs/07) ----
 
         api.MapGet("/projects/{projectId:guid}/audit-events", async (

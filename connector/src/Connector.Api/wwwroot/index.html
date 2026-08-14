@@ -208,8 +208,30 @@ async function exportAudit(projectId) {
   a.href = URL.createObjectURL(blob); a.download = 'audit.csv'; a.click();
 }
 
-$('user').onchange = refresh;
-$('model').onchange = refresh;
+// ---- Live updates: poll the activity cursor; refresh when anything changed ----
+// Every upload/download/checkout/review writes an audit event, so a bumped
+// lastEventId means the view is stale. 4s polling — cheap (single MAX query).
+let lastEventId = null;
+async function pollActivity() {
+  try {
+    const project = projects.find(p => p.models.some(m => m.id === currentModel));
+    if (!project) return;
+    const { lastEventId: id } = await api(`/projects/${project.id}/activity`);
+    if (lastEventId !== null && id > lastEventId) {
+      toast('New activity — refreshing…');
+      await refresh();
+      // refresh() reloads data; re-read the cursor so one burst = one refresh
+    }
+    lastEventId = id;
+  } catch { /* transient — try again next tick */ }
+}
+setInterval(pollActivity, 4000);
+const liveDot = document.createElement('span');
+liveDot.textContent = '● live'; liveDot.style.cssText = 'color:#4ade80;font-size:12px';
+document.querySelector('header .tag').after(liveDot);
+
+$('user').onchange = () => { lastEventId = null; refresh(); };
+$('model').onchange = () => { lastEventId = null; refresh(); };
 loadProjects().catch(e => toast(e.message || 'Failed to load — is the API running?', false));
 </script>
 </body>
