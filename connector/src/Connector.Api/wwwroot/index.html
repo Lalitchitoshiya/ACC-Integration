@@ -170,6 +170,7 @@ async function loadVersions() {
           acts.push(`<button class="btn" onclick="rejectVersion('${v.id}')">Reject</button>`);
         }
         acts.push(`<button class="btn" onclick="showHistory('${v.id}')">History</button>`);
+        acts.push(`<button class="btn" onclick="pickForWsPro('${v.id}', ${v.versionNumber})">Open in WS Pro</button>`);
         acts.push(`<button class="btn" onclick="viewNetwork('${v.id}', ${v.versionNumber})">🗺 Map</button>`);
         acts.push(`<button class="btn" onclick="downloadVersion('${v.id}', ${v.versionNumber})">⬇</button>`);
         return `<tr><td><b>${v.versionNumber}</b>${star}</td>
@@ -199,6 +200,13 @@ async function downloadVersion(versionId, versionNumber) {
   a.href = URL.createObjectURL(blob); a.download = `model_v${versionNumber}.csv`; a.click();
   toast(`Version ${versionNumber} downloaded from ACC.`);
 }
+async function pickForWsPro(versionId, versionNumber) {
+  try {
+    const { picked } = await api('/wspro/pick', { method: 'POST', body: JSON.stringify({ versionId }) });
+    toast(`v${versionNumber} of "${picked.model}" queued — now run open_from_acc.rb in WS Pro (empty network open).`);
+  } catch (e) { toast(e.message || 'Pick failed', false); }
+}
+
 // ---- Network map: render the WS Pro CSV export as an SVG GeoPlan-style view ----
 // Node tables carry x/y; link tables carry us/ds node ids. No Model Derivative
 // needed — CSV isn't a CAD format, but it IS the network graph, so we draw it.

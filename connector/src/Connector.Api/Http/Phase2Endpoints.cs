@@ -181,6 +181,49 @@ public static class Phase2Endpoints
             }, JsonOpts);
         });
 
+        // ---- WS Pro pick queue ----
+        // Dashboard-as-file-picker for WS Pro: the user clicks "Open in WS Pro" on a
+        // version (POST pick), then runs the generic open_from_acc.rb script, which asks
+        // "what did I pick?" (GET pick — consumed on read). Removes all script config
+        // editing; WS Pro has no UI SDK, so selection happens where UI exists.
+        // Dev-grade in-memory store (one pending pick per user); move to DB with real auth.
+        var pendingPicks = new System.Collections.Concurrent.ConcurrentDictionary<Guid, Guid>();
+
+        api.MapPost("/wspro/pick", async (
+            PickRequest body, ConnectorDbContext db, CurrentUserService current, CancellationToken ct) =>
+        {
+            var user = await current.GetUserAsync(ct);
+            if (user is null) return ApiError.Unauthenticated();
+            var version = await db.ModelVersions.Include(v => v.Model)
+                .FirstOrDefaultAsync(v => v.Id == body.VersionId, ct);
+            if (version is null) return ApiError.NotFound("Version not found.");
+            if (await current.GetRoleAsync(user.Id, version.Model!.ProjectId, ct) is null)
+                return ApiError.Forbidden();
+            pendingPicks[user.Id] = version.Id;
+            return Results.Json(new { picked = new { version.Id, version.VersionNumber, model = version.Model.Name } }, JsonOpts);
+        });
+
+        api.MapGet("/wspro/pick", async (
+            ConnectorDbContext db, CurrentUserService current, CancellationToken ct) =>
+        {
+            var user = await current.GetUserAsync(ct);
+            if (user is null) return ApiError.Unauthenticated();
+            if (!pendingPicks.TryRemove(user.Id, out var versionId)) // consumed on read
+                return Results.Json(new { pick = (object?)null }, JsonOpts);
+            var version = await db.ModelVersions.Include(v => v.Model)
+                .FirstOrDefaultAsync(v => v.Id == versionId, ct);
+            if (version is null) return Results.Json(new { pick = (object?)null }, JsonOpts);
+            return Results.Json(new
+            {
+                pick = new
+                {
+                    versionId = version.Id, versionNumber = version.VersionNumber,
+                    modelName = version.Model!.Name, reviewStatus = version.ReviewStatus.ToString(),
+                    changeDescription = version.ChangeDescription
+                }
+            }, JsonOpts);
+        });
+
         // ---- Activity cursor ----
         // Cheap "anything new?" endpoint the dashboard polls: returns the latest audit
         // event id for the project. Any state change (upload, download, checkout, review)
@@ -349,3 +392,4 @@ public static class Phase2Endpoints
 
 public record CheckoutRequest(bool? Override);
 public record RejectRequest(string? Comment);
+public record PickRequest(Guid VersionId);

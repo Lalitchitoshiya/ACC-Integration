@@ -39,7 +39,7 @@ fail_out('No network open — create a NEW EMPTY network, open it, then run this
   fail_out("Open network already has data in '#{t}' — open a new EMPTY network instead.") if count > 0
 end
 
-# --- 1. Resolve + download latest version from the connector ------------------
+# --- 1. Resolve which version to import ---------------------------------------
 def get(path, expect_redirect: false)
   uri = URI.parse(path.start_with?('http') ? path : "#{CONNECTOR_URL}#{path}")
   http = Net::HTTP.new(uri.host, uri.port)
@@ -53,12 +53,25 @@ def get(path, expect_redirect: false)
   res
 end
 
-latest = JSON.parse(get("/api/v1/models/#{MODEL_ID}/versions/latest-approved").body)
-version = latest['version']
-if version.nil?
-  fail_out('Model has no versions in ACC yet.') if latest['fallback'].nil?
-  version = latest['fallback']['version']
-  puts "WARNING: importing latest #{latest['fallback']['reviewStatus'].upcase} version — not yet approved."
+# Preferred path: a version picked on the dashboard ("Open in WS Pro" button).
+# The pick is consumed on read — one click, one import. If nothing was picked,
+# fall back to the latest approved version of MODEL_ID from the CONFIG above.
+version = nil
+pick = JSON.parse(get('/api/v1/wspro/pick').body)['pick']
+if pick
+  puts "Dashboard pick found: '#{pick['modelName']}' version #{pick['versionNumber']} (#{pick['reviewStatus']})"
+  puts "WARNING: this version is not approved." unless pick['reviewStatus'] == 'Approved'
+  version = { 'id' => pick['versionId'], 'versionNumber' => pick['versionNumber'],
+              'reviewStatus' => pick['reviewStatus'], 'changeDescription' => pick['changeDescription'] }
+else
+  puts 'No dashboard pick pending — falling back to latest approved of the configured model.'
+  latest = JSON.parse(get("/api/v1/models/#{MODEL_ID}/versions/latest-approved").body)
+  version = latest['version']
+  if version.nil?
+    fail_out('Model has no versions in ACC yet.') if latest['fallback'].nil?
+    version = latest['fallback']['version']
+    puts "WARNING: importing latest #{latest['fallback']['reviewStatus'].upcase} version — not yet approved."
+  end
 end
 puts "Fetching version #{version['versionNumber']} (#{version['reviewStatus']}) | #{version['changeDescription']}"
 
