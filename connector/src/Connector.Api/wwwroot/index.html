@@ -219,19 +219,39 @@ async function viewNetwork(versionId, versionNumber) {
   const text = await res.text();
 
   const nodes = {}, links = [];
-  let table = null, cols = null;
-  for (const line of text.split(/\r?\n/)) {
-    if (line.startsWith('## table=')) { table = line.slice(9).trim(); cols = null; continue; }
-    if (!table || !line) continue;
-    if (!cols) { cols = {}; line.split(',').forEach((h, i) => cols[h] ??= i); continue; }
-    const f = line.split(',');
-    const val = name => cols[name] !== undefined ? f[cols[name]] : undefined;
-    if (NODE_TABLES[table]) {
-      const x = parseFloat(val('x')), y = parseFloat(val('y'));
-      if (!isNaN(x) && !isNaN(y)) nodes[val('node_id')] = { x, y, type: NODE_TABLES[table] };
-    } else if (LINK_TABLES.includes(table)) {
-      const us = val('us_node_id'), ds = val('ds_node_id');
-      if (us && ds) links.push({ us, ds, pump: table === 'wn_pst' });
+  if (text.includes('[JUNCTIONS]') || text.includes('[PIPES]')) {
+    // EPANET INP: node types from sections, positions from [COORDINATES]
+    let section = '';
+    const types = {};
+    for (let line of text.split(/\r?\n/)) {
+      line = line.split(';')[0].trim();
+      if (!line) continue;
+      if (line.startsWith('[')) { section = line.replace(/[\[\]]/g, '').toUpperCase(); continue; }
+      const f = line.split(/\s+/);
+      if (section === 'JUNCTIONS') types[f[0]] = 'junction';
+      else if (section === 'RESERVOIRS') types[f[0]] = 'reservoir';
+      else if (section === 'TANKS') types[f[0]] = 'tank';
+      else if (section === 'PIPES' && f.length >= 3) links.push({ us: f[1], ds: f[2] });
+      else if ((section === 'PUMPS' || section === 'VALVES') && f.length >= 3) links.push({ us: f[1], ds: f[2], pump: section === 'PUMPS' });
+      else if (section === 'COORDINATES' && f.length >= 3)
+        nodes[f[0]] = { x: parseFloat(f[1]), y: parseFloat(f[2]), type: types[f[0]] || 'junction' };
+    }
+  } else {
+    // WS Pro sectioned CSV export
+    let table = null, cols = null;
+    for (const line of text.split(/\r?\n/)) {
+      if (line.startsWith('## table=')) { table = line.slice(9).trim(); cols = null; continue; }
+      if (!table || !line) continue;
+      if (!cols) { cols = {}; line.split(',').forEach((h, i) => cols[h] ??= i); continue; }
+      const f = line.split(',');
+      const val = name => cols[name] !== undefined ? f[cols[name]] : undefined;
+      if (NODE_TABLES[table]) {
+        const x = parseFloat(val('x')), y = parseFloat(val('y'));
+        if (!isNaN(x) && !isNaN(y)) nodes[val('node_id')] = { x, y, type: NODE_TABLES[table] };
+      } else if (LINK_TABLES.includes(table)) {
+        const us = val('us_node_id'), ds = val('ds_node_id');
+        if (us && ds) links.push({ us, ds, pump: table === 'wn_pst' });
+      }
     }
   }
   const pts = Object.values(nodes);
