@@ -187,7 +187,10 @@ public static class Phase2Endpoints
         // "what did I pick?" (GET pick — consumed on read). Removes all script config
         // editing; WS Pro has no UI SDK, so selection happens where UI exists.
         // Dev-grade in-memory store (one pending pick per user); move to DB with real auth.
-        var pendingPicks = new System.Collections.Concurrent.ConcurrentDictionary<Guid, Guid>();
+        // Consumption order: the requesting user's own pick first; otherwise the most
+        // recent pick from ANY user (so an Admin's dashboard click still reaches a script
+        // running under a different dev-header identity). pickedBy is reported either way.
+        var pendingPicks = new System.Collections.Concurrent.ConcurrentDictionary<Guid, (Guid VersionId, DateTimeOffset At, string PickedBy)>();
 
         api.MapPost("/wspro/pick", async (
             PickRequest body, ConnectorDbContext db, CurrentUserService current, CancellationToken ct) =>
@@ -199,7 +202,7 @@ public static class Phase2Endpoints
             if (version is null) return ApiError.NotFound("Version not found.");
             if (await current.GetRoleAsync(user.Id, version.Model!.ProjectId, ct) is null)
                 return ApiError.Forbidden();
-            pendingPicks[user.Id] = version.Id;
+            pendingPicks[user.Id] = (version.Id, DateTimeOffset.UtcNow, user.Name);
             return Results.Json(new { picked = new { version.Id, version.VersionNumber, model = version.Model.Name } }, JsonOpts);
         });
 
@@ -208,10 +211,18 @@ public static class Phase2Endpoints
         {
             var user = await current.GetUserAsync(ct);
             if (user is null) return ApiError.Unauthenticated();
-            if (!pendingPicks.TryRemove(user.Id, out var versionId)) // consumed on read
-                return Results.Json(new { pick = (object?)null }, JsonOpts);
+
+            (Guid VersionId, DateTimeOffset At, string PickedBy) entry;
+            if (!pendingPicks.TryRemove(user.Id, out entry)) // own pick first (consumed on read)
+            {
+                // Fallback: newest pick from any user — single-operator/demo convenience.
+                var newest = pendingPicks.OrderByDescending(kv => kv.Value.At).FirstOrDefault();
+                if (newest.Key == default || !pendingPicks.TryRemove(newest.Key, out entry))
+                    return Results.Json(new { pick = (object?)null }, JsonOpts);
+            }
+
             var version = await db.ModelVersions.Include(v => v.Model)
-                .FirstOrDefaultAsync(v => v.Id == versionId, ct);
+                .FirstOrDefaultAsync(v => v.Id == entry.VersionId, ct);
             if (version is null) return Results.Json(new { pick = (object?)null }, JsonOpts);
             return Results.Json(new
             {
@@ -219,7 +230,7 @@ public static class Phase2Endpoints
                 {
                     versionId = version.Id, versionNumber = version.VersionNumber,
                     modelName = version.Model!.Name, reviewStatus = version.ReviewStatus.ToString(),
-                    changeDescription = version.ChangeDescription
+                    changeDescription = version.ChangeDescription, pickedBy = entry.PickedBy
                 }
             }, JsonOpts);
         });
