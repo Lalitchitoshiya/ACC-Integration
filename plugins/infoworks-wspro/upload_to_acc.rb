@@ -9,14 +9,23 @@
 
 require 'net/http'
 require 'uri'
+require 'json'
 require 'securerandom'
 require 'tmpdir'
 
 # ----------------------------- CONFIG ---------------------------------------
 CONNECTOR_URL = 'http://localhost:5000'
-MODEL_ID      = '42ade9e2-621d-44f4-adbc-5b2b5cb922df' # "My INP Network" (GET /api/v1/projects/{id}/models)
 USER_EMAIL    = 'modeler@demo.local'                    # dev auth header (X-Dev-User) until APS user login lands
 SOURCE_TOOL   = 'InfoWorksWSPro'
+
+# Target model resolution, in priority order:
+#   1. MODEL_NAME_OVERRIDE below, if set — explicit choice wins.
+#   2. The OPEN NETWORK'S OWN NAME, matched against your registered models —
+#      so the same unmodified script uploads each network to ITS OWN model,
+#      and can never stack different networks into one version history.
+# If neither resolves to exactly one registered model, the script STOPS and
+# prints the catalog — it never guesses and never falls back to a hardcoded id.
+MODEL_NAME_OVERRIDE = ''
 # -----------------------------------------------------------------------------
 
 def fail_out(msg)
@@ -26,6 +35,40 @@ end
 
 net = WSApplication.current_network
 fail_out('No network open — open a network before running this script.') if net.nil?
+
+# --- 0. Resolve which registered model this network belongs to ----------------
+network_name = nil
+begin
+  mo = net.model_object
+  network_name = mo && mo.name
+rescue StandardError
+  network_name = nil
+end
+
+lookup_name = MODEL_NAME_OVERRIDE.to_s.strip.empty? ? network_name : MODEL_NAME_OVERRIDE.strip
+fail_out('Could not read the open network\'s name and MODEL_NAME_OVERRIDE is blank — set the override in the CONFIG block.') if lookup_name.nil? || lookup_name.strip.empty?
+
+catalog_uri = URI.parse("#{CONNECTOR_URL}/api/v1/projects")
+cat_http = Net::HTTP.new(catalog_uri.host, catalog_uri.port)
+cat_req = Net::HTTP::Get.new(catalog_uri.request_uri)
+cat_req['X-Dev-User'] = USER_EMAIL
+cat_res = cat_http.request(cat_req)
+fail_out("Connector returned HTTP #{cat_res.code} listing projects: #{cat_res.body[0..300]}") unless cat_res.code.to_i == 200
+projects = JSON.parse(cat_res.body)['projects']
+
+matches = projects.flat_map { |p| p['models'].select { |m| m['name'].casecmp?(lookup_name) } }
+if matches.empty?
+  puts "No registered model named '#{lookup_name}'. Registered models:"
+  projects.each do |p|
+    puts "  Project: #{p['name']}"
+    p['models'].each { |m| puts "    - #{m['name']}" }
+  end
+  fail_out("Register a model named '#{lookup_name}' first (dashboard/Admin API), or set MODEL_NAME_OVERRIDE to an existing name.")
+elsif matches.length > 1
+  fail_out("Model name '#{lookup_name}' exists in multiple projects — set MODEL_NAME_OVERRIDE to a unique name.")
+end
+MODEL_ID = matches.first['id']
+puts "Uploading network '#{network_name || '(unnamed)'}' to registered model '#{matches.first['name']}'"
 
 # --- 1. Ask for the change description (FR1.3: required, min 10 chars) -------
 # Dialog support varies between WS Pro builds; try each mechanism in turn.
