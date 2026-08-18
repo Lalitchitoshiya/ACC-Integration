@@ -16,8 +16,13 @@ require 'json'
 
 # ----------------------------- CONFIG ---------------------------------------
 CONNECTOR_URL = 'http://localhost:5000'
-MODEL_ID      = '42ade9e2-621d-44f4-adbc-5b2b5cb922df' # "My INP Network"
 USER_EMAIL    = 'modeler@demo.local'
+
+# FALLBACK model, used ONLY when no version was picked on the dashboard
+# (the "Open in WS Pro" button is the primary way to choose what to import —
+# it works for any model with no script changes). Select by NAME; leave blank
+# to print the catalog of available models and stop.
+FALLBACK_MODEL_NAME = 'My INP Network'
 # -----------------------------------------------------------------------------
 
 def fail_out(msg)
@@ -64,8 +69,25 @@ if pick
   version = { 'id' => pick['versionId'], 'versionNumber' => pick['versionNumber'],
               'reviewStatus' => pick['reviewStatus'], 'changeDescription' => pick['changeDescription'] }
 else
-  puts 'No dashboard pick pending — falling back to latest approved of the configured model.'
-  latest = JSON.parse(get("/api/v1/models/#{MODEL_ID}/versions/latest-approved").body)
+  puts 'No dashboard pick pending — falling back to the configured FALLBACK_MODEL_NAME.'
+
+  projects = JSON.parse(get('/api/v1/projects').body)['projects']
+  if FALLBACK_MODEL_NAME.to_s.strip.empty?
+    puts 'Available models (set FALLBACK_MODEL_NAME, or pick a version on the dashboard):'
+    projects.each do |p|
+      puts "  Project: #{p['name']}"
+      p['models'].each { |m| puts "    - #{m['name']}" }
+    end
+    fail_out('No dashboard pick and FALLBACK_MODEL_NAME is blank.')
+  end
+
+  matches = projects.flat_map { |p| p['models'].select { |m| m['name'].casecmp?(FALLBACK_MODEL_NAME) } }
+  fail_out("No model named '#{FALLBACK_MODEL_NAME}' — run with it blank to list options, or pick on the dashboard.") if matches.empty?
+  fail_out("Model name '#{FALLBACK_MODEL_NAME}' exists in multiple projects — pick the version on the dashboard instead.") if matches.length > 1
+  model_id = matches.first['id']
+  puts "Fallback model: '#{matches.first['name']}'"
+
+  latest = JSON.parse(get("/api/v1/models/#{model_id}/versions/latest-approved").body)
   version = latest['version']
   if version.nil?
     fail_out('Model has no versions in ACC yet.') if latest['fallback'].nil?
@@ -80,23 +102,71 @@ fail_out('No redirect to download URL.') if signed_url.nil?
 csv_text = get(signed_url).body
 puts "Downloaded #{csv_text.bytesize} bytes from ACC."
 
-# --- 2. Parse the sectioned CSV ----------------------------------------------
-# Format written by upload_to_acc.rb: "## table=NAME" / header row / data rows.
+# --- 2. Parse the downloaded file (auto-detect format) ------------------------
+# Two supported formats, normalized into the same `sections` structure:
+#   a) WS Pro sectioned CSV (written by upload_to_acc.rb): "## table=NAME" markers
+#   b) EPANET INP (raw uploads): [JUNCTIONS]/[TANKS]/[PIPES]/[COORDINATES]...
 sections = {}
-current = nil
-csv_text.each_line do |raw|
-  line = raw.chomp
-  if line.start_with?('## table=')
-    current = { 'fields' => nil, 'rows' => [] }
-    sections[line.sub('## table=', '').strip] = current
-  elsif current
-    if current['fields'].nil?
-      current['fields'] = line.split(',')
-    elsif !line.empty?
-      current['rows'] << line.split(',', -1)
+
+if csv_text.include?('## table=')
+  current = nil
+  csv_text.each_line do |raw|
+    line = raw.chomp
+    if line.start_with?('## table=')
+      current = { 'fields' => nil, 'rows' => [] }
+      sections[line.sub('## table=', '').strip] = current
+    elsif current
+      if current['fields'].nil?
+        current['fields'] = line.split(',')
+      elsif !line.empty?
+        current['rows'] << line.split(',', -1)
+      end
     end
   end
+
+elsif csv_text.include?('[JUNCTIONS]') || csv_text.include?('[PIPES]')
+  puts 'EPANET INP format detected — mapping to WS Pro tables.'
+  # Pass 1: read INP sections into memory.
+  inp = Hash.new { |h, k| h[k] = [] }
+  section = nil
+  csv_text.each_line do |raw|
+    line = raw.split(';').first.to_s.strip
+    next if line.empty?
+    if line.start_with?('[')
+      section = line.delete('[]').upcase
+    elsif section
+      inp[section] << line.split(/\s+/)
+    end
+  end
+  coords = {}
+  inp['COORDINATES'].each { |f| coords[f[0]] = [f[1], f[2]] if f.length >= 3 }
+
+  # Pass 2: map INP element types onto WS Pro tables (EPANET tank -> wn_reservoir,
+  # EPANET reservoir -> wn_fixed_head — WS Pro's naming, see specs/13).
+  node_rows = ->(rows, with_z) do
+    rows.map do |f|
+      x, y = coords[f[0]] || ['', '']
+      with_z ? [f[0], x, y, f[1] || ''] : [f[0], x, y]
+    end
+  end
+  sections['wn_node'] = { 'fields' => %w[node_id x y z],
+                          'rows' => node_rows.call(inp['JUNCTIONS'], true) }
+  sections['wn_reservoir'] = { 'fields' => %w[node_id x y],
+                               'rows' => node_rows.call(inp['TANKS'], false) }
+  sections['wn_fixed_head'] = { 'fields' => %w[node_id x y],
+                                'rows' => node_rows.call(inp['RESERVOIRS'], false) }
+  sections['wn_pipe'] = { 'fields' => %w[us_node_id ds_node_id length diameter],
+                          'rows' => inp['PIPES'].select { |f| f.length >= 3 }
+                                               .map { |f| [f[1], f[2], f[3] || '', f[4] || ''] } }
+  skipped_inp = (inp['PUMPS'].length + inp['VALVES'].length)
+  puts "Note: #{skipped_inp} pump/valve link(s) not imported — INP pump/valve semantics don't map 1:1 to WS Pro tables (Phase 5 cross-tool exchange scope)." if skipped_inp > 0
+
+else
+  fail_out('Downloaded file is neither a WS Pro CSV export nor an EPANET INP — cannot import.')
 end
+
+total_rows = sections.values.sum { |s| s['rows'].length }
+fail_out('Parsed 0 elements from the downloaded file — refusing to report an empty import as success.') if total_rows == 0
 
 # --- 3. Write rows into the open network via the Exchange API ----------------
 # Skip *_flag columns and internal fields that WS Pro derives itself; set what we
