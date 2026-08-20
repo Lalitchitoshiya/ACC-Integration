@@ -15,7 +15,10 @@ require 'tmpdir'
 
 # ----------------------------- CONFIG ---------------------------------------
 CONNECTOR_URL = 'http://localhost:5000'
-USER_EMAIL    = 'modeler@demo.local'                    # dev auth header (X-Dev-User) until APS user login lands
+# Admin account so AUTO_REGISTER can create models (creation is Admin-only,
+# specs/12); Admins can also upload. Use modeler@demo.local if you only upload
+# to already-registered models and want uploads attributed to the modeler role.
+USER_EMAIL    = 'admin@demo.local'                      # dev auth header (X-Dev-User) until APS user login lands
 SOURCE_TOOL   = 'InfoWorksWSPro'
 
 # Target model resolution, in priority order:
@@ -26,6 +29,16 @@ SOURCE_TOOL   = 'InfoWorksWSPro'
 # If neither resolves to exactly one registered model, the script STOPS and
 # prints the catalog — it never guesses and never falls back to a hardcoded id.
 MODEL_NAME_OVERRIDE = ''
+
+# Auto-register (FR1.5 "first-upload-creates-model" flow): when no registered
+# model matches, create one named after the network and upload to it — one run,
+# no separate registration step. Server still enforces Admin-only creation, so
+# USER_EMAIL must be an Admin for this to succeed (fine for single-operator use;
+# with real APS login this becomes the signed-in user's actual role).
+AUTO_REGISTER = true
+# Folder for auto-registered models. Blank = reuse the folder of an existing
+# model in your project (keeps everything together in ACC).
+DEFAULT_FOLDER_URN = ''
 # -----------------------------------------------------------------------------
 
 def fail_out(msg)
@@ -57,6 +70,31 @@ fail_out("Connector returned HTTP #{cat_res.code} listing projects: #{cat_res.bo
 projects = JSON.parse(cat_res.body)['projects']
 
 matches = projects.flat_map { |p| p['models'].select { |m| m['name'].casecmp?(lookup_name) } }
+if matches.empty? && AUTO_REGISTER
+  fail_out("Auto-register needs exactly one project membership (you have #{projects.length}) — register the model manually instead.") if projects.length != 1
+  target_project = projects.first
+  folder = DEFAULT_FOLDER_URN.to_s.strip
+  folder = (target_project['models'].first || {})['accFolderUrn'].to_s if folder.empty?
+  fail_out('Auto-register: project has no existing model to copy a folder from — set DEFAULT_FOLDER_URN in CONFIG.') if folder.empty?
+
+  puts "No registered model named '#{lookup_name}' — auto-registering it (AUTO_REGISTER = true)."
+  create_uri = URI.parse("#{CONNECTOR_URL}/api/v1/projects/#{target_project['id']}/models")
+  creq = Net::HTTP::Post.new(create_uri.request_uri)
+  creq['X-Dev-User'] = USER_EMAIL
+  creq['Content-Type'] = 'application/json'
+  creq.body = { name: lookup_name, toolType: 'InfoWorksWSPro', accFolderUrn: folder }.to_json
+  cres = Net::HTTP.new(create_uri.host, create_uri.port).request(creq)
+  case cres.code.to_i
+  when 201
+    matches = [JSON.parse(cres.body)['model']]
+    puts "Registered model '#{lookup_name}' in project '#{target_project['name']}'."
+  when 403
+    fail_out("Auto-register refused: '#{USER_EMAIL}' is not an Admin (model creation is Admin-only, specs/12). Set USER_EMAIL to an admin account or register the model on the dashboard.")
+  else
+    fail_out("Auto-register failed (HTTP #{cres.code}): #{cres.body.to_s[0..300]}")
+  end
+end
+
 if matches.empty?
   puts "No registered model named '#{lookup_name}'. Registered models:"
   projects.each do |p|
