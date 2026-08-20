@@ -67,6 +67,11 @@ public class ModelVersion
     [MaxLength(100)] public required string SourceToolVersion { get; set; }
     public ReviewStatus ReviewStatus { get; set; } = ReviewStatus.Draft;
     public long FileSizeBytes { get; set; }
+    // Set when a download attempt finds the file gone from ACC (deleted/moved outside
+    // the connector). Never auto-cleared and never causes the row to be deleted — audit
+    // history (specs/07) must survive external deletion; this only flags it honestly.
+    public bool AccFileMissing { get; set; }
+    public DateTimeOffset? AccMissingDetectedAt { get; set; }
     // JSONB column; schema defined in specs/13-metadata-schema.md. Null when parsing failed.
     public string? MetadataJson { get; set; }
     [MaxLength(2000)] public string? ParseError { get; set; }

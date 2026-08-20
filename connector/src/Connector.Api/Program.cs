@@ -96,6 +96,23 @@ app.MapGet("/api/v1/aps/objects", async (
     return Results.Content(body, "application/json", statusCode: (int)res.StatusCode);
 });
 
+// Dev diagnostics: delete an object from the app's OSS bucket by key — used to
+// simulate a file deleted/moved outside the connector, for testing the
+// AccFileMissing detection path (specs/04 drift case). Development only.
+app.MapDelete("/api/v1/aps/buckets/{bucketKey}/objects/{*objectKey}", async (
+    string bucketKey, string objectKey, ApsTokenService aps, IHttpClientFactory httpFactory, CancellationToken ct) =>
+{
+    // ACC Docs storage lives in Autodesk's own project bucket (e.g. wip.dm.*),
+    // not our custom bucket — bucket is caller-supplied so this works for either.
+    var token = aps.UserAuthorized ? await aps.GetThreeLeggedTokenAsync(ct) : await aps.GetTwoLeggedTokenAsync(ct);
+    var http = httpFactory.CreateClient("aps");
+    http.DefaultRequestHeaders.Authorization = new("Bearer", token);
+    var res = await http.DeleteAsync(
+        $"https://developer.api.autodesk.com/oss/v2/buckets/{bucketKey}/objects/{Uri.EscapeDataString(objectKey)}", ct);
+    var body = await res.Content.ReadAsStringAsync(ct);
+    return Results.Content(body, "application/json", statusCode: (int)res.StatusCode);
+});
+
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
 // Verifies APS credentials from user-secrets without exposing them: acquires a 2-legged

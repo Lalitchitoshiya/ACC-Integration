@@ -255,6 +255,19 @@ public static class Endpoints
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                // A 404 from ACC means the file was deleted/moved outside the connector
+                // (specs/04 drift case) — flag it honestly, never delete the version row
+                // or the audit history that references it.
+                if (ex.Message.Contains("(404)"))
+                {
+                    version.AccFileMissing = true;
+                    version.AccMissingDetectedAt = DateTimeOffset.UtcNow;
+                    await Audit(db, version.Model.ProjectId, user, "version.acc_file_missing",
+                        version.ModelId, version.Id, new { version.VersionNumber });
+                    await db.SaveChangesAsync(ct);
+                    return ApiError.NotFound(
+                        $"File for version {version.VersionNumber} no longer exists in ACC (deleted or moved outside the connector). Version history is preserved for audit purposes.");
+                }
                 return ApiError.UpstreamError($"ACC download URL resolution failed: {ex.Message}");
             }
         });
@@ -304,7 +317,8 @@ public static class Endpoints
         sourceTool = v.SourceTool, sourceToolVersion = v.SourceToolVersion,
         reviewStatus = v.ReviewStatus.ToString(), fileSizeBytes = v.FileSizeBytes,
         metadata = v.MetadataJson is null ? (JsonElement?)null : JsonSerializer.Deserialize<JsonElement>(v.MetadataJson),
-        parseError = v.ParseError
+        parseError = v.ParseError,
+        accFileMissing = v.AccFileMissing, accMissingDetectedAt = v.AccMissingDetectedAt
     };
 }
 

@@ -163,17 +163,23 @@ async function loadVersions() {
         const n = v.metadata?.network;
         const meta = n ? `<div class="meta-chips"><span class="chip">${n.nodes.total} nodes</span><span class="chip">${n.links.total} links</span><span class="chip">${(n.totalPipeLength/1000).toFixed(1)} km pipe</span></div>` : '<span class="muted">no metadata</span>';
         const star = v.id === approvedId ? ' ⭐' : '';
+        const missing = v.accFileMissing;
         const acts = [];
-        if (v.reviewStatus === 'Draft') acts.push(`<button class="btn" onclick="act('${v.id}','submit')">Submit for review</button>`);
-        if (v.reviewStatus === 'InReview') {
-          acts.push(`<button class="btn primary" onclick="act('${v.id}','approve')">Approve</button>`);
-          acts.push(`<button class="btn" onclick="rejectVersion('${v.id}')">Reject</button>`);
+        if (missing) {
+          acts.push(`<span class="chip" style="border-color:#dc2626;color:#dc2626" title="Detected ${fmtDate(v.accMissingDetectedAt)}">Unavailable in ACC — history preserved</span>`);
+        } else {
+          if (v.reviewStatus === 'Draft') acts.push(`<button class="btn" onclick="act('${v.id}','submit')">Submit for review</button>`);
+          if (v.reviewStatus === 'InReview') {
+            acts.push(`<button class="btn primary" onclick="act('${v.id}','approve')">Approve</button>`);
+            acts.push(`<button class="btn" onclick="rejectVersion('${v.id}')">Reject</button>`);
+          }
+          acts.push(`<button class="btn" onclick="showHistory('${v.id}')">History</button>`);
+          acts.push(`<button class="btn" onclick="pickForWsPro('${v.id}', ${v.versionNumber})">Open in WS Pro</button>`);
+          acts.push(`<button class="btn" onclick="viewNetwork('${v.id}', ${v.versionNumber})">🗺 Map</button>`);
+          acts.push(`<button class="btn" onclick="downloadVersion('${v.id}', ${v.versionNumber})">⬇</button>`);
         }
-        acts.push(`<button class="btn" onclick="showHistory('${v.id}')">History</button>`);
-        acts.push(`<button class="btn" onclick="pickForWsPro('${v.id}', ${v.versionNumber})">Open in WS Pro</button>`);
-        acts.push(`<button class="btn" onclick="viewNetwork('${v.id}', ${v.versionNumber})">🗺 Map</button>`);
-        acts.push(`<button class="btn" onclick="downloadVersion('${v.id}', ${v.versionNumber})">⬇</button>`);
-        return `<tr><td><b>${v.versionNumber}</b>${star}</td>
+        const rowStyle = missing ? ' style="opacity:.65"' : '';
+        return `<tr${rowStyle}><td><b>${v.versionNumber}</b>${star}${missing ? ' ⚠️' : ''}</td>
           <td><span class="badge ${v.reviewStatus}">${v.reviewStatus}</span></td>
           <td class="muted">${fmtDate(v.uploadedAt)}</td>
           <td>${v.changeDescription}</td><td>${meta}</td><td>${acts.join('')}</td></tr>`;
