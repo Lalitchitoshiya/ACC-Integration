@@ -1,7 +1,5 @@
-using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using Connector.Api.Acc;
 using Connector.Api.Data;
 using Connector.Api.Domain;
 using Microsoft.EntityFrameworkCore;
@@ -17,93 +15,6 @@ public static class Phase2Endpoints
     public static void MapPhase2Endpoints(this WebApplication app)
     {
         var api = app.MapGroup("/api/v1");
-
-        // ---- Self-service project registration ----
-        // Project creation has no ProjectMembership to check yet (bootstrap problem),
-        // so any authenticated connector user may register an ACC project — the
-        // creator becomes its Admin, same pattern as "create a workspace" in most
-        // SaaS tools. Model creation inside a project stays Admin-only (specs/12).
-        api.MapPost("/projects", async (
-            RegisterProjectRequest body, ConnectorDbContext db, CurrentUserService current,
-            ApsTokenService aps, IHttpClientFactory httpFactory, CancellationToken ct) =>
-        {
-            var user = await current.GetUserAsync(ct);
-            if (user is null) return ApiError.Unauthenticated();
-            if (string.IsNullOrWhiteSpace(body.AccProjectName) && string.IsNullOrWhiteSpace(body.AccProjectUrn))
-                return ApiError.ValidationFailed("Provide either accProjectName (auto-discovered via ACC) or accProjectUrn + accHubUrn directly.");
-
-            string hubUrn, projectUrn, projectDisplayName;
-
-            if (!string.IsNullOrWhiteSpace(body.AccProjectUrn))
-            {
-                // Power-user path: URNs supplied directly, no ACC lookup needed.
-                if (string.IsNullOrWhiteSpace(body.AccHubUrn))
-                    return ApiError.ValidationFailed("accHubUrn is required when accProjectUrn is supplied directly.");
-                hubUrn = body.AccHubUrn!;
-                projectUrn = body.AccProjectUrn!;
-                projectDisplayName = body.Name?.Trim() is { Length: > 0 } n ? n : "Unnamed Project";
-            }
-            else
-            {
-                // Self-service path: find the ACC project by name across every hub
-                // this Autodesk account can see (mirrors the manual lookup previously
-                // done by hand via /api/v1/aps/dm).
-                var token = aps.UserAuthorized ? await aps.GetThreeLeggedTokenAsync(ct) : await aps.GetTwoLeggedTokenAsync(ct);
-                var http = httpFactory.CreateClient("aps");
-                http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
-
-                var hubsRes = await http.GetAsync("https://developer.api.autodesk.com/project/v1/hubs", ct);
-                if (!hubsRes.IsSuccessStatusCode)
-                    return ApiError.UpstreamError($"Could not list ACC hubs (HTTP {(int)hubsRes.StatusCode}).");
-                using var hubsJson = JsonDocument.Parse(await hubsRes.Content.ReadAsStringAsync(ct));
-
-                var found = new List<(string HubId, string ProjectId, string Name)>();
-                foreach (var hub in hubsJson.RootElement.GetProperty("data").EnumerateArray())
-                {
-                    var hubId = hub.GetProperty("id").GetString()!;
-                    var projRes = await http.GetAsync(
-                        $"https://developer.api.autodesk.com/project/v1/hubs/{hubId}/projects", ct);
-                    if (!projRes.IsSuccessStatusCode) continue;
-                    using var projJson = JsonDocument.Parse(await projRes.Content.ReadAsStringAsync(ct));
-                    foreach (var p in projJson.RootElement.GetProperty("data").EnumerateArray())
-                    {
-                        var name = p.GetProperty("attributes").GetProperty("name").GetString() ?? "";
-                        if (name.Equals(body.AccProjectName, StringComparison.OrdinalIgnoreCase))
-                            found.Add((hubId, p.GetProperty("id").GetString()!, name));
-                    }
-                }
-
-                if (found.Count == 0)
-                    return ApiError.NotFound($"No ACC project named '{body.AccProjectName}' visible to this account. Check the name matches exactly what's shown in ACC.");
-                if (found.Count > 1)
-                    return ApiError.Conflict($"'{body.AccProjectName}' matches {found.Count} ACC projects across different hubs — supply accHubUrn + accProjectUrn directly to disambiguate.");
-
-                (hubUrn, projectUrn, projectDisplayName) = found[0];
-            }
-
-            if (await db.Projects.AnyAsync(p => p.AccProjectUrn == projectUrn, ct))
-                return ApiError.Conflict($"ACC project '{projectDisplayName}' is already registered in the connector.");
-            var connectorName = body.Name?.Trim() is { Length: > 0 } cn ? cn : projectDisplayName;
-            if (await db.Projects.AnyAsync(p => p.Name == connectorName, ct))
-                return ApiError.Conflict($"A connector project named '{connectorName}' already exists — pass a different 'name'.");
-
-            var project = new Project
-            {
-                Id = Guid.NewGuid(), Name = connectorName, AccHubUrn = hubUrn, AccProjectUrn = projectUrn
-            };
-            db.Projects.Add(project);
-            db.ProjectMemberships.Add(new ProjectMembership
-            {
-                ProjectId = project.Id, UserId = user.Id, Role = ProjectRole.Admin
-            });
-            await db.SaveChangesAsync(ct);
-
-            return Results.Json(new
-            {
-                project = new { project.Id, project.Name, project.AccHubUrn, project.AccProjectUrn },
-                note = "You were added as Admin of this project. Register a model (POST /api/v1/projects/{id}/models) to start uploading."
-            }, JsonOpts, statusCode: 201);
-        });
 
         // ---- Checkout (specs/02) ----
 
@@ -493,4 +404,3 @@ public static class Phase2Endpoints
 public record CheckoutRequest(bool? Override);
 public record RejectRequest(string? Comment);
 public record PickRequest(Guid VersionId);
-public record RegisterProjectRequest(string? Name, string? AccProjectName, string? AccHubUrn, string? AccProjectUrn);
