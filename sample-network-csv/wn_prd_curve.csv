@@ -1,0 +1,9 @@
+table,curve_id,curve_id_flag,curve,notes,user_defined,description,description_flag,relationship,relationship_flag,power,power_flag
+wn_prd_curve,TR26,,#<WSStructure:0x000217dc2bcf50>,,false,,,,,1.118,
+wn_prd_curve,FAVAD,,#<WSStructure:0x000217dc2bc348>,,false,,,,,1.118,
+wn_prd_curve,Exponential,,#<WSStructure:0x000217dc2b7708>,,false,,,,,1.118,
+wn_prd_curve,Legacy Demand,,#<WSStructure:0x000217dc2b6a10>,,false,,,,,1.118,
+wn_prd_curve,Legacy Leakage,,#<WSStructure:0x000217dc2b5de0>,,false,,,,,1.118,
+wn_prd_curve,Default Demand,,#<WSStructure:0x000217dc2b5250>,,false,,,,,1.118,
+wn_prd_curve,Default Leakage,,#<WSStructure:0x000217dc2b4710>,,false,,,,,1.118,
+wn_prd_curve,Power Law,,#<WSStructure:0x000217dc2afb20>,,false,,,,,1.118,

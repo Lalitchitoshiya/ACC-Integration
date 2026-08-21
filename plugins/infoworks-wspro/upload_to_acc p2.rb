@@ -30,6 +30,13 @@ SOURCE_TOOL   = 'InfoWorksWSPro'
 # prints the catalog — it never guesses and never falls back to a hardcoded id.
 MODEL_NAME_OVERRIDE = ''
 
+# WHICH ACC PROJECT this upload should go to. Required once you have more than
+# one connector Project (e.g. after creating a second ACC project) — narrows
+# model-name matching to that project, and tells AUTO_REGISTER where a new
+# model should be created. Leave blank only while you have a single project.
+# Set to '' and run once to print every project you can choose from.
+PROJECT_NAME = 'project2'
+
 # Auto-register (FR1.5 "first-upload-creates-model" flow): when no registered
 # model matches, create one named after the network and upload to it — one run,
 # no separate registration step. Server still enforces Admin-only creation, so
@@ -37,8 +44,8 @@ MODEL_NAME_OVERRIDE = ''
 # with real APS login this becomes the signed-in user's actual role).
 AUTO_REGISTER = true
 # Folder for auto-registered models. Blank = reuse the folder of an existing
-# model in your project (keeps everything together in ACC).
-DEFAULT_FOLDER_URN = ''
+# model in the target project (keeps everything together in ACC).
+DEFAULT_FOLDER_URN = 'urn:adsk.wips9vkd:fs.folder:co.GPKBQFMaQNmTdWBHBBpdDQ'
 # -----------------------------------------------------------------------------
 
 def fail_out(msg)
@@ -67,17 +74,33 @@ cat_req = Net::HTTP::Get.new(catalog_uri.request_uri)
 cat_req['X-Dev-User'] = USER_EMAIL
 cat_res = cat_http.request(cat_req)
 fail_out("Connector returned HTTP #{cat_res.code} listing projects: #{cat_res.body[0..300]}") unless cat_res.code.to_i == 200
-projects = JSON.parse(cat_res.body)['projects']
+all_projects = JSON.parse(cat_res.body)['projects']
+
+if PROJECT_NAME.to_s.strip.empty?
+  if all_projects.length > 1
+    puts 'You belong to multiple ACC projects — set PROJECT_NAME in the CONFIG block to one of these:'
+    all_projects.each { |p| puts "  - #{p['name']}" }
+    fail_out('PROJECT_NAME is blank with multiple projects available — pick one and set it in CONFIG.')
+  end
+  projects = all_projects
+else
+  projects = all_projects.select { |p| p['name'].casecmp?(PROJECT_NAME.strip) }
+  if projects.empty?
+    puts "No project named '#{PROJECT_NAME}'. Available projects:"
+    all_projects.each { |p| puts "  - #{p['name']}" }
+    fail_out("Set PROJECT_NAME to one of the projects listed above.")
+  end
+end
 
 matches = projects.flat_map { |p| p['models'].select { |m| m['name'].casecmp?(lookup_name) } }
 if matches.empty? && AUTO_REGISTER
-  fail_out("Auto-register needs exactly one project membership (you have #{projects.length}) — register the model manually instead.") if projects.length != 1
+  fail_out("Auto-register needs exactly one target project (matched #{projects.length}) — set PROJECT_NAME to narrow it down.") if projects.length != 1
   target_project = projects.first
   folder = DEFAULT_FOLDER_URN.to_s.strip
   folder = (target_project['models'].first || {})['accFolderUrn'].to_s if folder.empty?
-  fail_out('Auto-register: project has no existing model to copy a folder from — set DEFAULT_FOLDER_URN in CONFIG.') if folder.empty?
+  fail_out('Auto-register: target project has no existing model to copy a folder from — set DEFAULT_FOLDER_URN in CONFIG.') if folder.empty?
 
-  puts "No registered model named '#{lookup_name}' — auto-registering it (AUTO_REGISTER = true)."
+  puts "No registered model named '#{lookup_name}' in project '#{target_project['name']}' — auto-registering it (AUTO_REGISTER = true)."
   create_uri = URI.parse("#{CONNECTOR_URL}/api/v1/projects/#{target_project['id']}/models")
   creq = Net::HTTP::Post.new(create_uri.request_uri)
   creq['X-Dev-User'] = USER_EMAIL

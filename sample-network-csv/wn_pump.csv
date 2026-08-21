@@ -1,0 +1,3 @@
+table,id,id_flag,notes,triplets,nominal_flow,nominal_flow_flag,nominal_speed,nominal_speed_flag,suction_diameter,suction_diameter_flag,pressure_diameter,pressure_diameter_flag,asset_id,asset_id_flag,iwts_inertia_total,iwts_inertia_type
+wn_pump,1,,,#<WSStructure:0x000217d88e6c90>,213.3304443359375,#I,1450.0,#I,,,,,1,,0.0,USER
+wn_pump,2,,,#<WSStructure:0x000217d89caad0>,740.2283325195312,#I,1450.0,#I,,,,,2,,0.0,USER
