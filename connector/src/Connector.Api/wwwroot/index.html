@@ -176,6 +176,7 @@ async function loadVersions() {
           acts.push(`<button class="btn" onclick="showHistory('${v.id}')">History</button>`);
           acts.push(`<button class="btn" onclick="pickForWsPro('${v.id}', ${v.versionNumber})">Open in WS Pro</button>`);
           acts.push(`<button class="btn" onclick="viewNetwork('${v.id}', ${v.versionNumber})">🗺 Map</button>`);
+          if (v.hasPreviewImage) acts.push(`<a class="btn" href="/api/v1/versions/${v.id}/preview.png" target="_blank" title="Open the PNG map that's also stored in ACC Docs">🖼 ACC Preview</a>`);
           acts.push(`<button class="btn" onclick="downloadVersion('${v.id}', ${v.versionNumber})">⬇</button>`);
         }
         const rowStyle = missing ? ' style="opacity:.65"' : '';

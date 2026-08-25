@@ -72,6 +72,9 @@ public class ModelVersion
     // history (specs/07) must survive external deletion; this only flags it honestly.
     public bool AccFileMissing { get; set; }
     public DateTimeOffset? AccMissingDetectedAt { get; set; }
+    // Companion PNG map image, uploaded alongside the version so ACC's native file
+    // preview shows a visual — ACC doesn't preview CSV/INP or accept SVG uploads at all.
+    [MaxLength(400)] public string? PreviewImageUrn { get; set; }
     // JSONB column; schema defined in specs/13-metadata-schema.md. Null when parsing failed.
     public string? MetadataJson { get; set; }
     [MaxLength(2000)] public string? ParseError { get; set; }

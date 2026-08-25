@@ -151,9 +151,36 @@ public static class Endpoints
                 meta = await extractor.ExtractAsync(stream, file.FileName, ct);
             }
 
-            // 3. Persist Version record linked to the ACC version (spec 04: no drift).
+            // 2b. Render + upload a companion PNG map — ACC can't preview CSV/INP and
+            // outright refuses SVG uploads (confirmed: 403 ERR_NOT_ALLOWED), but PNG is
+            // natively previewable in ACC Docs. Best-effort: never blocks the real upload.
             var versionNumber = (await db.ModelVersions.Where(v => v.ModelId == modelId)
                 .MaxAsync(v => (int?)v.VersionNumber, ct) ?? 0) + 1;
+            string? previewUrn = null;
+            try
+            {
+                await using var geomStream = file.OpenReadStream();
+                var graph = await NetworkGraphExtractor.ExtractAsync(geomStream, file.FileName, ct);
+                if (graph is not null)
+                {
+                    var png = PngMapRenderer.Render(graph, $"{model.Name} — v{versionNumber}");
+                    if (png is not null)
+                    {
+                        using var pngStream = new MemoryStream(png);
+                        var pngName = $"{Path.GetFileNameWithoutExtension(file.FileName)}_v{versionNumber}_map.png";
+                        var pngUploaded = await acc.UploadVersionAsync(
+                            project!.AccProjectUrn, model.AccFolderUrn, pngName, pngStream, ct);
+                        previewUrn = pngUploaded.ItemVersionUrn;
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Preview generation is a nice-to-have — log via parseWarnings-style note, never fail the upload.
+                previewUrn = null;
+            }
+
+            // 3. Persist Version record linked to the ACC version (spec 04: no drift).
             var version = new ModelVersion
             {
                 Id = Guid.NewGuid(), ModelId = modelId, VersionNumber = versionNumber,
@@ -163,7 +190,7 @@ public static class Endpoints
                 SourceTool = sourceTool, SourceToolVersion = sourceToolVersion,
                 ReviewStatus = ReviewStatus.Draft, FileSizeBytes = file.Length,
                 MetadataJson = meta.Metadata is null ? null : JsonSerializer.Serialize(meta.Metadata, JsonOpts),
-                ParseError = meta.ParseError
+                ParseError = meta.ParseError, PreviewImageUrn = previewUrn
             };
             db.ModelVersions.Add(version);
             await Audit(db, model.ProjectId, user, "version.uploaded", modelId, version.Id,
@@ -271,6 +298,33 @@ public static class Endpoints
                 return ApiError.UpstreamError($"ACC download URL resolution failed: {ex.Message}");
             }
         });
+
+        api.MapGet("/versions/{versionId:guid}/preview.png", async (
+            Guid versionId, ConnectorDbContext db, CurrentUserService current,
+            IAccClient acc, CancellationToken ct) =>
+        {
+            var version = await db.ModelVersions.Include(v => v.Model)
+                .FirstOrDefaultAsync(v => v.Id == versionId, ct);
+            if (version is null) return ApiError.NotFound($"Version {versionId} not found.");
+            if (version.PreviewImageUrn is null)
+                return ApiError.NotFound("No preview image was generated for this version (unsupported format, or generation failed).");
+
+            var user = await current.GetUserAsync(ct);
+            if (user is null) return ApiError.Unauthenticated();
+            if (await current.GetRoleAsync(user.Id, version.Model!.ProjectId, ct) is null)
+                return ApiError.Forbidden();
+
+            var project = await db.Projects.FindAsync([version.Model.ProjectId], ct);
+            try
+            {
+                var url = await acc.GetDownloadUrlAsync(project!.AccProjectUrn, version.PreviewImageUrn, ct);
+                return Results.Redirect(url);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                return ApiError.UpstreamError($"ACC preview image resolution failed: {ex.Message}");
+            }
+        });
     }
 
     // ---- helpers ----
@@ -318,7 +372,8 @@ public static class Endpoints
         reviewStatus = v.ReviewStatus.ToString(), fileSizeBytes = v.FileSizeBytes,
         metadata = v.MetadataJson is null ? (JsonElement?)null : JsonSerializer.Deserialize<JsonElement>(v.MetadataJson),
         parseError = v.ParseError,
-        accFileMissing = v.AccFileMissing, accMissingDetectedAt = v.AccMissingDetectedAt
+        accFileMissing = v.AccFileMissing, accMissingDetectedAt = v.AccMissingDetectedAt,
+        hasPreviewImage = v.PreviewImageUrn is not null
     };
 }
 
