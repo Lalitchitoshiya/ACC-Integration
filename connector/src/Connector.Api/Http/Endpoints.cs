@@ -96,7 +96,8 @@ public static class Endpoints
 
         api.MapPost("/models/{modelId:guid}/versions", async (
             Guid modelId, HttpRequest request, ConnectorDbContext db, CurrentUserService current,
-            IAccClient acc, IEnumerable<IMetadataExtractor> extractors, CancellationToken ct) =>
+            IAccClient acc, ModelDerivativeClient derivative,
+            IEnumerable<IMetadataExtractor> extractors, CancellationToken ct) =>
         {
             var user = await current.GetUserAsync(ct);
             if (user is null) return ApiError.Unauthenticated();
@@ -151,9 +152,41 @@ public static class Endpoints
                 meta = await extractor.ExtractAsync(stream, file.FileName, ct);
             }
 
-            // 3. Persist Version record linked to the ACC version (spec 04: no drift).
+            // 2b. DXF companion + Model Derivative translation (specs/14-cad-visualization.md).
+            // Best-effort throughout: a DXF/translation failure never blocks the real upload
+            // (FR14.6) — TranslationStatus stays null/Failed and the dashboard just shows
+            // "not available" instead of a 3D view.
             var versionNumber = (await db.ModelVersions.Where(v => v.ModelId == modelId)
                 .MaxAsync(v => (int?)v.VersionNumber, ct) ?? 0) + 1;
+            string? cadPreviewUrn = null;
+            string? derivativeUrn = null;
+            CadTranslationStatus? translationStatus = null;
+            string? translationError = null;
+            try
+            {
+                await using var geomStream = file.OpenReadStream();
+                var graph = await NetworkGraphExtractor.ExtractAsync(geomStream, file.FileName, ct);
+                var dxfBytes = graph is null ? null : DxfWriter.Render(graph);
+                if (dxfBytes is not null)
+                {
+                    using var dxfStream = new MemoryStream(dxfBytes);
+                    var dxfName = $"{Path.GetFileNameWithoutExtension(file.FileName)}_v{versionNumber}.dxf";
+                    var dxfUploaded = await acc.UploadVersionAsync(
+                        project!.AccProjectUrn, model.AccFolderUrn, dxfName, dxfStream, ct);
+                    cadPreviewUrn = dxfUploaded.ItemVersionUrn;
+
+                    derivativeUrn = await derivative.SubmitTranslationJobAsync(
+                        project.AccProjectUrn, cadPreviewUrn, ct);
+                    translationStatus = CadTranslationStatus.Pending;
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                translationStatus = CadTranslationStatus.Failed;
+                translationError = ex.Message;
+            }
+
+            // 3. Persist Version record linked to the ACC version (spec 04: no drift).
             var version = new ModelVersion
             {
                 Id = Guid.NewGuid(), ModelId = modelId, VersionNumber = versionNumber,
@@ -163,7 +196,9 @@ public static class Endpoints
                 SourceTool = sourceTool, SourceToolVersion = sourceToolVersion,
                 ReviewStatus = ReviewStatus.Draft, FileSizeBytes = file.Length,
                 MetadataJson = meta.Metadata is null ? null : JsonSerializer.Serialize(meta.Metadata, JsonOpts),
-                ParseError = meta.ParseError
+                ParseError = meta.ParseError,
+                CadPreviewUrn = cadPreviewUrn, DerivativeUrn = derivativeUrn,
+                TranslationStatus = translationStatus, TranslationError = translationError
             };
             db.ModelVersions.Add(version);
             await Audit(db, model.ProjectId, user, "version.uploaded", modelId, version.Id,
@@ -271,6 +306,48 @@ public static class Endpoints
                 return ApiError.UpstreamError($"ACC download URL resolution failed: {ex.Message}");
             }
         });
+
+        // ---- CAD visualization (specs/14) ----
+
+        // On-demand poll (chosen over a background worker for v1 simplicity, per spec's
+        // open question) — dashboard calls this while status is Pending; updates the
+        // stored status in place so subsequent loads don't need to re-poll a finished job.
+        api.MapGet("/versions/{versionId:guid}/translation-status", async (
+            Guid versionId, ConnectorDbContext db, CurrentUserService current,
+            ModelDerivativeClient derivative, CancellationToken ct) =>
+        {
+            var version = await db.ModelVersions.Include(v => v.Model)
+                .FirstOrDefaultAsync(v => v.Id == versionId, ct);
+            if (version is null) return ApiError.NotFound($"Version {versionId} not found.");
+
+            var user = await current.GetUserAsync(ct);
+            if (user is null) return ApiError.Unauthenticated();
+            if (await current.GetRoleAsync(user.Id, version.Model!.ProjectId, ct) is null)
+                return ApiError.Forbidden();
+
+            if (version.DerivativeUrn is null)
+                return Results.Json(new { status = (string?)null, derivativeUrn = (string?)null }, JsonOpts);
+
+            if (version.TranslationStatus is CadTranslationStatus.Pending)
+            {
+                var result = await derivative.GetTranslationStatusAsync(version.DerivativeUrn, ct);
+                version.TranslationStatus = result.Status switch
+                {
+                    "success" => CadTranslationStatus.Success,
+                    "failed" or "timeout" => CadTranslationStatus.Failed,
+                    _ => CadTranslationStatus.Pending // pending/inprogress — still working
+                };
+                version.TranslationError = result.ErrorMessage;
+                await db.SaveChangesAsync(ct);
+            }
+
+            return Results.Json(new
+            {
+                status = version.TranslationStatus.ToString(),
+                derivativeUrn = version.TranslationStatus == CadTranslationStatus.Success ? version.DerivativeUrn : null,
+                error = version.TranslationError
+            }, JsonOpts);
+        });
     }
 
     // ---- helpers ----
@@ -318,7 +395,9 @@ public static class Endpoints
         reviewStatus = v.ReviewStatus.ToString(), fileSizeBytes = v.FileSizeBytes,
         metadata = v.MetadataJson is null ? (JsonElement?)null : JsonSerializer.Deserialize<JsonElement>(v.MetadataJson),
         parseError = v.ParseError,
-        accFileMissing = v.AccFileMissing, accMissingDetectedAt = v.AccMissingDetectedAt
+        accFileMissing = v.AccFileMissing, accMissingDetectedAt = v.AccMissingDetectedAt,
+        translationStatus = v.TranslationStatus?.ToString(), derivativeUrn = v.DerivativeUrn,
+        translationError = v.TranslationError
     };
 }
 

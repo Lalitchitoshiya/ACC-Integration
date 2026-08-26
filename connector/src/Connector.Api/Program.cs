@@ -13,6 +13,7 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddHttpClient();
 builder.Services.AddScoped<CurrentUserService>();
 builder.Services.AddSingleton<ApsTokenService>();
+builder.Services.AddSingleton<ModelDerivativeClient>();
 builder.Services.AddSingleton<IMetadataExtractor, WsProMetadataExtractor>();
 
 if (builder.Configuration.GetValue("Acc:UseMock", true))
@@ -134,6 +135,16 @@ app.MapGet("/api/v1/aps/status", async (ApsTokenService aps, CancellationToken c
     {
         return Results.Json(new { configured = true, tokenAcquired = false, error = ex.Message }, statusCode: 502);
     }
+});
+
+// specs/14-cad-visualization.md FR14.5 — short-lived token for the APS Viewer JS SDK.
+// Reuses the existing 2-legged token (already carries data:read, sufficient for viewing
+// files in the same hub); a dedicated viewables:read-only scope profile is a future
+// hardening step, not required for this to work.
+app.MapGet("/api/v1/aps/viewer-token", async (ApsTokenService aps, CancellationToken ct) =>
+{
+    var token = await aps.GetTwoLeggedTokenAsync(ct);
+    return Results.Json(new { access_token = token, token_type = "Bearer", expires_in = 3300 });
 });
 
 app.Run();

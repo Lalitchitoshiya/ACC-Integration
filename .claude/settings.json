@@ -32,7 +32,10 @@
       "PowerShell(& curl.exe -s -X POST -H \"X-Dev-User: modeler@demo.local\" -H \"Content-Type: application/json\" -d '{\"accProjectName\":\"project1\"}' \"http://localhost:5000/api/v1/projects\")",
       "PowerShell(& curl.exe -s -X POST -H \"X-Dev-User: modeler@demo.local\" -H \"Content-Type: application/json\" -d '{\"accProjectName\":\"DoesNotExistProject\"}' \"http://localhost:5000/api/v1/projects\")",
       "PowerShell(try { \\(Invoke-RestMethod http://localhost:5000/health -TimeoutSec 3\\).status } catch { \"not running\" })",
-      "PowerShell(Start-Sleep -Seconds 8; try { \\(Invoke-RestMethod http://localhost:5000/health\\).status } catch { \"still down: $\\($_.Exception.Message\\)\" })"
+      "PowerShell(Start-Sleep -Seconds 8; try { \\(Invoke-RestMethod http://localhost:5000/health\\).status } catch { \"still down: $\\($_.Exception.Message\\)\" })",
+      "Bash(\"/c/Program Files/PostgreSQL/18/bin/psql.exe\" -U connector -h localhost -d acc_connector -c 'ALTER TABLE \"ModelVersions\" ADD COLUMN IF NOT EXISTS \"PreviewImageUrn\" varchar\\(400\\) NULL;')",
+      "Bash(curl -s -H \"X-Dev-User: modeler@demo.local\" \"http://localhost:5000/api/v1/models/a90b7d84-e9a1-4557-b4ee-247d9033212e/versions\")",
+      "Bash(curl -s http://localhost:5000/)"
     ]
   }
 }

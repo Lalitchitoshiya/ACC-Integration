@@ -3,7 +3,7 @@
 Status: Draft v1
 Depends on: [00-overview.md](00-overview.md)
 
-Five phases, single-tool-first: prove core version control + workflow on InfoWorks WS Pro alone before adding tools or breadth.
+Six phases, single-tool-first: prove core version control + workflow on InfoWorks WS Pro alone before adding tools, breadth, or visualization depth.
 
 ## Phase 1 — Foundation (ACC wiring + upload + history)
 
@@ -52,11 +52,21 @@ Modules: [06-cross-tool-exchange.md](06-cross-tool-exchange.md), ArcGIS Utility 
 - GIS field-mapping to ArcGIS Utility Network
 - Explicitly the highest-risk, most-aspirational phase — see the Tool Interop Capability Matrix in [06-cross-tool-exchange.md](06-cross-tool-exchange.md); do not commit scope here until export coverage is validated per-tool
 
+## Phase 6 — CAD Visualization
+
+Modules: [14-cad-visualization.md](14-cad-visualization.md)
+
+- DXF export of the network graph, uploaded as a companion file (same pattern as the Phase 1-era PNG companion image)
+- Model Derivative translation (DXF → SVF) so the model becomes viewable in Autodesk's actual interactive Viewer — a real upgrade over the static PNG/SVG map rendering used everywhere else
+- Explicitly scoped to DXF, not DWG/IFC — see the format decision table in [14-cad-visualization.md](14-cad-visualization.md) for why (DWG needs Autodesk's licensed RealDWG SDK; IFC's schema is heavier than a 2D network needs)
+- Independent of Phase 4/5 — doesn't require additional tools or cross-tool exchange, just a richer visualization path for whatever's already in ACC
+
 ## What's explicitly out of Phase 1–2 (MVP)
 
 - Any tool other than InfoWorks WS Pro
 - Notifications and comparison (Phase 3)
 - Cross-tool exchange (Phase 5) — inherently meaningless with one tool anyway
+- Interactive CAD visualization (Phase 6) — the PNG companion image (built in Phase 1/2 timeframe) covers the MVP's visualization need; DXF/Viewer integration is a deliberate later enhancement, not required for the core collaboration workflow
 
 ## Related
 

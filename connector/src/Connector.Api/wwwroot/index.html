@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ACC Water Connector</title>
+<!-- specs/14-cad-visualization.md: the one deliberate exception to this dashboard's
+     zero-dependency design — the real Autodesk Viewer requires its own JS/CSS. -->
+<link rel="stylesheet" href="https://developer.api.autodesk.com/modelderivative/v2/viewers/7.*/style.min.css">
+<script src="https://developer.api.autodesk.com/modelderivative/v2/viewers/7.*/viewer3D.min.js"></script>
 <style>
   :root {
     --bg: #f5f7fa; --card: #ffffff; --ink: #1a2332; --muted: #64748b;
@@ -93,6 +97,18 @@
   </div>
 </div>
 
+<!-- specs/14-cad-visualization.md: real Autodesk Viewer, loaded from the DXF's
+     Model Derivative translation — a genuine interactive CAD view, not a static image. -->
+<div id="viewer-modal" style="display:none;position:fixed;inset:0;background:rgba(11,31,58,.75);z-index:50">
+  <div style="background:#fff;border-radius:12px;max-width:1000px;margin:4vh auto;padding:18px 22px">
+    <div class="row-flex" style="justify-content:space-between;margin-bottom:8px">
+      <b id="viewer-title">3D View</b>
+      <button class="btn" onclick="closeViewer()">Close</button>
+    </div>
+    <div id="viewer-canvas" style="width:100%;height:70vh;background:#f8fafc;border:1px solid var(--line);border-radius:8px;position:relative"></div>
+  </div>
+</div>
+
 <script>
 const $ = id => document.getElementById(id);
 let projects = [], currentModel = null;
@@ -176,6 +192,9 @@ async function loadVersions() {
           acts.push(`<button class="btn" onclick="showHistory('${v.id}')">History</button>`);
           acts.push(`<button class="btn" onclick="pickForWsPro('${v.id}', ${v.versionNumber})">Open in WS Pro</button>`);
           acts.push(`<button class="btn" onclick="viewNetwork('${v.id}', ${v.versionNumber})">🗺 Map</button>`);
+          if (v.translationStatus === 'Success') acts.push(`<button class="btn" onclick="view3D('${v.id}', ${v.versionNumber})">🧊 3D View</button>`);
+          else if (v.translationStatus === 'Pending') acts.push(`<span class="chip muted">⏳ 3D translating…</span>`);
+          else if (v.translationStatus === 'Failed') acts.push(`<span class="chip muted" title="${v.translationError || ''}">3D view unavailable</span>`);
           acts.push(`<button class="btn" onclick="downloadVersion('${v.id}', ${v.versionNumber})">⬇</button>`);
         }
         const rowStyle = missing ? ' style="opacity:.65"' : '';
@@ -218,6 +237,42 @@ async function pickForWsPro(versionId, versionNumber) {
 // needed — CSV isn't a CAD format, but it IS the network graph, so we draw it.
 const NODE_TABLES = { wn_node: 'junction', wn_reservoir: 'tank', wn_fixed_head: 'reservoir' };
 const LINK_TABLES = ['wn_pipe', 'wn_valve', 'wn_float_valve', 'wn_non_return_valve', 'wn_pst', 'wn_meter'];
+// ---- 3D View: real Autodesk Viewer loaded from the DXF's Model Derivative translation ----
+let viewerInstance = null, viewerInitialized = false;
+async function view3D(versionId, versionNumber) {
+  toast('Loading 3D view…');
+  const { access_token, expires_in } = await (await fetch('/api/v1/aps/viewer-token', { headers: hdrs() })).json();
+  const versions = await api(`/models/${currentModel}/versions`);
+  const v = versions.versions.find(x => x.id === versionId);
+  if (!v?.derivativeUrn) return toast('No translated derivative available for this version', false);
+
+  $('viewer-title').textContent = `3D View — version ${versionNumber}`;
+  $('viewer-modal').style.display = 'block';
+
+  const options = {
+    env: 'AutodeskProduction', api: 'derivativeV2',
+    getAccessToken: (cb) => cb(access_token, expires_in)
+  };
+  const initAndLoad = () => {
+    if (!viewerInstance) {
+      viewerInstance = new Autodesk.Viewing.GuiViewer3D($('viewer-canvas'));
+      viewerInstance.start();
+    }
+    Autodesk.Viewing.Document.load(`urn:${v.derivativeUrn}`,
+      (doc) => viewerInstance.loadDocumentNode(doc, doc.getRoot().getDefaultGeometry()),
+      (code, msg) => toast(`Viewer load failed: ${msg || code}`, false));
+  };
+  if (!viewerInitialized) {
+    Autodesk.Viewing.Initializer(options, () => { viewerInitialized = true; initAndLoad(); });
+  } else {
+    initAndLoad();
+  }
+}
+function closeViewer() {
+  $('viewer-modal').style.display = 'none';
+  if (viewerInstance) { viewerInstance.finish(); viewerInstance = null; viewerInitialized = false; }
+}
+
 async function viewNetwork(versionId, versionNumber) {
   toast('Loading network from ACC…');
   const res = await fetch(`/api/v1/versions/${versionId}/download`, { headers: hdrs() });

@@ -20,5 +20,6 @@ This spec has been split into per-module documents under [specs/](specs/00-overv
 - [specs/11-api-contracts.md](specs/11-api-contracts.md) — concrete endpoints, request/response shapes
 - [specs/12-permissions-errors.md](specs/12-permissions-errors.md) — role → action matrix, error response contract
 - [specs/13-metadata-schema.md](specs/13-metadata-schema.md) — hydraulic model metadata schema (WS Pro, Phase 1)
+- [specs/14-cad-visualization.md](specs/14-cad-visualization.md) — DXF export + Autodesk Viewer integration (Phase 6)
 
 Each module doc contains its own requirements (FR-numbered, unchanged from the original monolithic spec), flow, edge cases, acceptance criteria, and open questions.
