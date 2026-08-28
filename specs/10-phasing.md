@@ -52,14 +52,14 @@ Modules: [06-cross-tool-exchange.md](06-cross-tool-exchange.md), ArcGIS Utility 
 - GIS field-mapping to ArcGIS Utility Network
 - Explicitly the highest-risk, most-aspirational phase — see the Tool Interop Capability Matrix in [06-cross-tool-exchange.md](06-cross-tool-exchange.md); do not commit scope here until export coverage is validated per-tool
 
-## Phase 6 — CAD Visualization
+## Phase 6 — CAD Visualization (two tracks: DXF + IFC)
 
 Modules: [14-cad-visualization.md](14-cad-visualization.md)
 
-- DXF export of the network graph, uploaded as a companion file (same pattern as the Phase 1-era PNG companion image)
-- Model Derivative translation (DXF → SVF) so the model becomes viewable in Autodesk's actual interactive Viewer — a real upgrade over the static PNG/SVG map rendering used everywhere else
-- Explicitly scoped to DXF, not DWG/IFC — see the format decision table in [14-cad-visualization.md](14-cad-visualization.md) for why (DWG needs Autodesk's licensed RealDWG SDK; IFC's schema is heavier than a 2D network needs)
-- Independent of Phase 4/5 — doesn't require additional tools or cross-tool exchange, just a richer visualization path for whatever's already in ACC
+- **Track A — DXF** *(implemented)*: network exported as a DXF companion file, Model Derivative translation (DXF → SVF2), embedded Autodesk Viewer in the dashboard. Real attribute values shown as drawn TEXT labels — the format's ceiling, since DXF is a drawing format and custom data (XDATA) was empirically confirmed not to survive translation.
+- **Track B — IFC** *(approved, spike-gated)*: network exported as semantic BIM objects (`IfcPipeSegment` etc.) with property sets, so the Viewer's properties panel shows **named values exactly matching InfoWorks WS Pro's property panel** — the proper fix for property fidelity, not a labeling workaround. A mandatory minimal spike (FR14.8) verifies custom Pset visibility before the full converter is built.
+- DWG remains rejected (needs Autodesk's licensed RealDWG SDK) — see the format decision table in [14-cad-visualization.md](14-cad-visualization.md).
+- Independent of Phase 4/5 — doesn't require additional tools or cross-tool exchange, just richer visualization paths for whatever's already in ACC.
 
 ## What's explicitly out of Phase 1–2 (MVP)
 

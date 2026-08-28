@@ -192,9 +192,14 @@ async function loadVersions() {
           acts.push(`<button class="btn" onclick="showHistory('${v.id}')">History</button>`);
           acts.push(`<button class="btn" onclick="pickForWsPro('${v.id}', ${v.versionNumber})">Open in WS Pro</button>`);
           acts.push(`<button class="btn" onclick="viewNetwork('${v.id}', ${v.versionNumber})">🗺 Map</button>`);
-          if (v.translationStatus === 'Success') acts.push(`<button class="btn" onclick="view3D('${v.id}', ${v.versionNumber})">🧊 3D View</button>`);
-          else if (v.translationStatus === 'Pending') acts.push(`<span class="chip muted">⏳ 3D translating…</span>`);
-          else if (v.translationStatus === 'Failed') acts.push(`<span class="chip muted" title="${v.translationError || ''}">3D view unavailable</span>`);
+          // 3D View prefers the IFC derivative (property-exact, specs/14 FR14.15);
+          // DXF stays available as the "schematic" fallback variant.
+          if (v.ifcTranslationStatus === 'Success') acts.push(`<button class="btn" onclick="view3D('${v.id}', ${v.versionNumber}, 'ifc')" title="IFC — properties match WS Pro exactly">🧊 3D View</button>`);
+          else if (v.ifcTranslationStatus === 'Pending') acts.push(`<span class="chip muted">⏳ IFC translating…</span>`);
+          else if (v.ifcTranslationStatus === 'Failed') acts.push(`<span class="chip muted" title="${v.ifcTranslationError || ''}">❌ IFC unavailable</span>`);
+          if (v.translationStatus === 'Success') acts.push(`<button class="btn" onclick="view3D('${v.id}', ${v.versionNumber}, 'dxf')" title="DXF — schematic drawing with text labels">📐 Schematic</button>`);
+          else if (v.translationStatus === 'Pending') acts.push(`<span class="chip muted">⏳ DXF translating…</span>`);
+          else if (v.translationStatus === 'Failed') acts.push(`<span class="chip muted" title="${v.translationError || ''}">❌ DXF unavailable</span>`);
           acts.push(`<button class="btn" onclick="downloadVersion('${v.id}', ${v.versionNumber})">⬇</button>`);
         }
         const rowStyle = missing ? ' style="opacity:.65"' : '';
@@ -203,6 +208,18 @@ async function loadVersions() {
           <td class="muted">${fmtDate(v.uploadedAt)}</td>
           <td>${v.changeDescription}</td><td>${meta}</td><td>${acts.join('')}</td></tr>`;
       }).join('') + '</table>';
+
+    // Auto-resolve pending translations: /translation-status both polls Autodesk AND
+    // persists the outcome, so chips flip to ✅/❌ without a manual reload.
+    const pending = versions.filter(x => x.translationStatus === 'Pending' || x.ifcTranslationStatus === 'Pending');
+    if (pending.length && !window._pollingTranslations) {
+      window._pollingTranslations = true;
+      setTimeout(async () => {
+        try { await Promise.all(pending.map(x => api(`/versions/${x.id}/translation-status`))); } catch {}
+        window._pollingTranslations = false;
+        if ($('model').value === currentModel) loadVersions();
+      }, 8000);
+    }
   } catch (e) { el.innerHTML = `<span class="muted">${e.message || 'Load failed'}</span>`; }
 }
 async function act(versionId, action) {
@@ -237,16 +254,20 @@ async function pickForWsPro(versionId, versionNumber) {
 // needed — CSV isn't a CAD format, but it IS the network graph, so we draw it.
 const NODE_TABLES = { wn_node: 'junction', wn_reservoir: 'tank', wn_fixed_head: 'reservoir' };
 const LINK_TABLES = ['wn_pipe', 'wn_valve', 'wn_float_valve', 'wn_non_return_valve', 'wn_pst', 'wn_meter'];
-// ---- 3D View: real Autodesk Viewer loaded from the DXF's Model Derivative translation ----
+// ---- 3D View: real Autodesk Viewer — IFC derivative (property-exact) preferred,
+// DXF as the schematic variant. Same viewer either way, just a different URN. ----
 let viewerInstance = null, viewerInitialized = false;
-async function view3D(versionId, versionNumber) {
+async function view3D(versionId, versionNumber, kind) {
   toast('Loading 3D view…');
   const { access_token, expires_in } = await (await fetch('/api/v1/aps/viewer-token', { headers: hdrs() })).json();
   const versions = await api(`/models/${currentModel}/versions`);
   const v = versions.versions.find(x => x.id === versionId);
-  if (!v?.derivativeUrn) return toast('No translated derivative available for this version', false);
+  const urn = kind === 'dxf' ? v?.derivativeUrn : (v?.ifcDerivativeUrn || v?.derivativeUrn);
+  if (!urn) return toast('No translated derivative available for this version', false);
 
-  $('viewer-title').textContent = `3D View — version ${versionNumber}`;
+  $('viewer-title').textContent = kind === 'dxf'
+    ? `Schematic (DXF) — version ${versionNumber}`
+    : `3D View (IFC) — version ${versionNumber}`;
   $('viewer-modal').style.display = 'block';
 
   const options = {
@@ -258,7 +279,7 @@ async function view3D(versionId, versionNumber) {
       viewerInstance = new Autodesk.Viewing.GuiViewer3D($('viewer-canvas'));
       viewerInstance.start();
     }
-    Autodesk.Viewing.Document.load(`urn:${v.derivativeUrn}`,
+    Autodesk.Viewing.Document.load(`urn:${urn}`,
       (doc) => viewerInstance.loadDocumentNode(doc, doc.getRoot().getDefaultGeometry()),
       (code, msg) => toast(`Viewer load failed: ${msg || code}`, false));
   };

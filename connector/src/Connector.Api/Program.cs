@@ -67,6 +67,45 @@ app.MapGet("/api/v1/aps/dm", async (
     return Results.Content(body, "application/json", statusCode: (int)res.StatusCode);
 });
 
+// Dev diagnostics: POST twin of the /aps/dm proxy — needed for the IFC spike
+// (specs/14 FR14.8) to submit Model Derivative jobs for hand-assembled files.
+// Same 3-legged token, exploration only, remove in prod.
+app.MapPost("/api/v1/aps/dmpost", async (
+    string path, HttpRequest request, ApsTokenService aps, IHttpClientFactory httpFactory, CancellationToken ct) =>
+{
+    if (!path.StartsWith('/')) return Results.BadRequest("path must start with /");
+    var token = await aps.GetThreeLeggedTokenAsync(ct);
+    var http = httpFactory.CreateClient("aps");
+    http.DefaultRequestHeaders.Authorization = new("Bearer", token);
+    using var bodyReader = new StreamReader(request.Body);
+    var body = await bodyReader.ReadToEndAsync(ct);
+    var content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
+    // Force retranslation when resubmitting the same source URN (spike iteration).
+    http.DefaultRequestHeaders.Add("x-ads-force", "true");
+    var res = await http.PostAsync($"https://developer.api.autodesk.com{path}", content, ct);
+    var resBody = await res.Content.ReadAsStringAsync(ct);
+    return Results.Content(resBody, "application/json", statusCode: (int)res.StatusCode);
+});
+
+// Dev diagnostics: generate the IFC for an existing version's file on demand (Stage 2
+// validation, specs/14 Track B) — downloads the source from ACC, runs the extractor +
+// IfcWriter, returns the STEP text. No side effects; remove in prod.
+app.MapGet("/api/v1/dev/ifc-preview", async (
+    Guid versionId, ConnectorDbContext db, IAccClient acc, IHttpClientFactory httpFactory, CancellationToken ct) =>
+{
+    var version = await db.ModelVersions.Include(v => v.Model).ThenInclude(m => m!.Project)
+        .FirstOrDefaultAsync(v => v.Id == versionId, ct);
+    if (version is null) return Results.NotFound();
+    var url = await acc.GetDownloadUrlAsync(version.Model!.Project!.AccProjectUrn, version.AccItemVersionUrn, ct);
+    var http = httpFactory.CreateClient("s3");
+    await using var stream = await http.GetStreamAsync(url, ct);
+    var graph = await NetworkGraphExtractor.ExtractAsync(stream, "source" +
+        (version.SourceTool.Contains("INP", StringComparison.OrdinalIgnoreCase) ? ".inp" : ".csv"), ct);
+    if (graph is null) return Results.BadRequest("Not a recognized CSV/INP file.");
+    var ifc = IfcWriter.Render(graph, version.Model.Name);
+    return ifc is null ? Results.BadRequest("Empty graph.") : Results.Text(System.Text.Encoding.ASCII.GetString(ifc), "text/plain");
+});
+
 // Dev diagnostics: list ACC/Forma hubs visible to the user token (falls back to app token).
 app.MapGet("/api/v1/aps/hubs", async (
     ApsTokenService aps, IHttpClientFactory httpFactory, CancellationToken ct) =>

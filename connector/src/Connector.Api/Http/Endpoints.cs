@@ -152,38 +152,76 @@ public static class Endpoints
                 meta = await extractor.ExtractAsync(stream, file.FileName, ct);
             }
 
-            // 2b. DXF companion + Model Derivative translation (specs/14-cad-visualization.md).
-            // Best-effort throughout: a DXF/translation failure never blocks the real upload
-            // (FR14.6) — TranslationStatus stays null/Failed and the dashboard just shows
-            // "not available" instead of a 3D view.
+            // 2b. CAD companions + Model Derivative translation (specs/14, both tracks).
+            // Best-effort throughout: a companion/translation failure never blocks the real
+            // upload (FR14.6/FR14.14), and each track fails independently of the other.
             var versionNumber = (await db.ModelVersions.Where(v => v.ModelId == modelId)
                 .MaxAsync(v => (int?)v.VersionNumber, ct) ?? 0) + 1;
-            string? cadPreviewUrn = null;
-            string? derivativeUrn = null;
+            string? cadPreviewUrn = null, derivativeUrn = null, translationError = null;
             CadTranslationStatus? translationStatus = null;
-            string? translationError = null;
+            string? ifcPreviewUrn = null, ifcDerivativeUrn = null, ifcTranslationError = null;
+            CadTranslationStatus? ifcTranslationStatus = null;
+
+            NetworkGraph? graph = null;
             try
             {
                 await using var geomStream = file.OpenReadStream();
-                var graph = await NetworkGraphExtractor.ExtractAsync(geomStream, file.FileName, ct);
-                var dxfBytes = graph is null ? null : DxfWriter.Render(graph);
-                if (dxfBytes is not null)
-                {
-                    using var dxfStream = new MemoryStream(dxfBytes);
-                    var dxfName = $"{Path.GetFileNameWithoutExtension(file.FileName)}_v{versionNumber}.dxf";
-                    var dxfUploaded = await acc.UploadVersionAsync(
-                        project!.AccProjectUrn, model.AccFolderUrn, dxfName, dxfStream, ct);
-                    cadPreviewUrn = dxfUploaded.ItemVersionUrn;
-
-                    derivativeUrn = await derivative.SubmitTranslationJobAsync(
-                        project.AccProjectUrn, cadPreviewUrn, ct);
-                    translationStatus = CadTranslationStatus.Pending;
-                }
+                graph = await NetworkGraphExtractor.ExtractAsync(geomStream, file.FileName, ct);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                translationStatus = CadTranslationStatus.Failed;
-                translationError = ex.Message;
+                translationError = ifcTranslationError = $"Geometry extraction failed: {ex.Message}";
+                translationStatus = ifcTranslationStatus = CadTranslationStatus.Failed;
+            }
+
+            // Track A: DXF (schematic; real values as drawn TEXT labels)
+            if (graph is not null)
+            {
+                try
+                {
+                    var dxfBytes = DxfWriter.Render(graph);
+                    if (dxfBytes is not null)
+                    {
+                        using var dxfStream = new MemoryStream(dxfBytes);
+                        var dxfName = $"{Path.GetFileNameWithoutExtension(file.FileName)}_v{versionNumber}.dxf";
+                        var dxfUploaded = await acc.UploadVersionAsync(
+                            project!.AccProjectUrn, model.AccFolderUrn, dxfName, dxfStream, ct);
+                        cadPreviewUrn = dxfUploaded.ItemVersionUrn;
+                        derivativeUrn = await derivative.SubmitTranslationJobAsync(
+                            project.AccProjectUrn, cadPreviewUrn, ct);
+                        translationStatus = CadTranslationStatus.Pending;
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    translationStatus = CadTranslationStatus.Failed;
+                    translationError = ex.Message;
+                }
+
+                // Track B: IFC (semantic; property-exact — spec FR14.9–FR14.14)
+                try
+                {
+                    var ifcBytes = IfcWriter.Render(graph, model.Name);
+                    if (ifcBytes is not null)
+                    {
+                        using var ifcStream = new MemoryStream(ifcBytes);
+                        var ifcName = $"{Path.GetFileNameWithoutExtension(file.FileName)}_v{versionNumber}.ifc";
+                        var ifcUploaded = await acc.UploadVersionAsync(
+                            project!.AccProjectUrn, model.AccFolderUrn, ifcName, ifcStream, ct);
+                        ifcPreviewUrn = ifcUploaded.ItemVersionUrn;
+                        // conversionMethod v4 is MANDATORY for IFC (spike finding: default
+                        // legacy loader yields an empty model with a success status).
+                        ifcDerivativeUrn = await derivative.SubmitTranslationJobAsync(
+                            project.AccProjectUrn, ifcPreviewUrn, ct,
+                            views: ["2d", "3d"], conversionMethod: "v4");
+                        ifcTranslationStatus = CadTranslationStatus.Pending;
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    ifcTranslationStatus = CadTranslationStatus.Failed;
+                    ifcTranslationError = ex.Message;
+                }
             }
 
             // 3. Persist Version record linked to the ACC version (spec 04: no drift).
@@ -198,7 +236,9 @@ public static class Endpoints
                 MetadataJson = meta.Metadata is null ? null : JsonSerializer.Serialize(meta.Metadata, JsonOpts),
                 ParseError = meta.ParseError,
                 CadPreviewUrn = cadPreviewUrn, DerivativeUrn = derivativeUrn,
-                TranslationStatus = translationStatus, TranslationError = translationError
+                TranslationStatus = translationStatus, TranslationError = translationError,
+                IfcPreviewUrn = ifcPreviewUrn, IfcDerivativeUrn = ifcDerivativeUrn,
+                IfcTranslationStatus = ifcTranslationStatus, IfcTranslationError = ifcTranslationError
             };
             db.ModelVersions.Add(version);
             await Audit(db, model.ProjectId, user, "version.uploaded", modelId, version.Id,
@@ -325,10 +365,8 @@ public static class Endpoints
             if (await current.GetRoleAsync(user.Id, version.Model!.ProjectId, ct) is null)
                 return ApiError.Forbidden();
 
-            if (version.DerivativeUrn is null)
-                return Results.Json(new { status = (string?)null, derivativeUrn = (string?)null }, JsonOpts);
-
-            if (version.TranslationStatus is CadTranslationStatus.Pending)
+            var changed = false;
+            if (version.DerivativeUrn is not null && version.TranslationStatus is CadTranslationStatus.Pending)
             {
                 var result = await derivative.GetTranslationStatusAsync(version.DerivativeUrn, ct);
                 version.TranslationStatus = result.Status switch
@@ -338,14 +376,30 @@ public static class Endpoints
                     _ => CadTranslationStatus.Pending // pending/inprogress — still working
                 };
                 version.TranslationError = result.ErrorMessage;
-                await db.SaveChangesAsync(ct);
+                changed = true;
             }
+            if (version.IfcDerivativeUrn is not null && version.IfcTranslationStatus is CadTranslationStatus.Pending)
+            {
+                var result = await derivative.GetTranslationStatusAsync(version.IfcDerivativeUrn, ct);
+                version.IfcTranslationStatus = result.Status switch
+                {
+                    "success" => CadTranslationStatus.Success,
+                    "failed" or "timeout" => CadTranslationStatus.Failed,
+                    _ => CadTranslationStatus.Pending
+                };
+                version.IfcTranslationError = result.ErrorMessage;
+                changed = true;
+            }
+            if (changed) await db.SaveChangesAsync(ct);
 
             return Results.Json(new
             {
-                status = version.TranslationStatus.ToString(),
+                status = version.TranslationStatus?.ToString(),
                 derivativeUrn = version.TranslationStatus == CadTranslationStatus.Success ? version.DerivativeUrn : null,
-                error = version.TranslationError
+                error = version.TranslationError,
+                ifcStatus = version.IfcTranslationStatus?.ToString(),
+                ifcDerivativeUrn = version.IfcTranslationStatus == CadTranslationStatus.Success ? version.IfcDerivativeUrn : null,
+                ifcError = version.IfcTranslationError
             }, JsonOpts);
         });
     }
@@ -397,7 +451,9 @@ public static class Endpoints
         parseError = v.ParseError,
         accFileMissing = v.AccFileMissing, accMissingDetectedAt = v.AccMissingDetectedAt,
         translationStatus = v.TranslationStatus?.ToString(), derivativeUrn = v.DerivativeUrn,
-        translationError = v.TranslationError
+        translationError = v.TranslationError,
+        ifcTranslationStatus = v.IfcTranslationStatus?.ToString(), ifcDerivativeUrn = v.IfcDerivativeUrn,
+        ifcTranslationError = v.IfcTranslationError
     };
 }
 

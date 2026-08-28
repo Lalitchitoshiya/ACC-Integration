@@ -80,6 +80,11 @@ public class ModelVersion
     [MaxLength(400)] public string? DerivativeUrn { get; set; }
     public CadTranslationStatus? TranslationStatus { get; set; }
     [MaxLength(2000)] public string? TranslationError { get; set; }
+    // specs/14 Track B — IFC companion (property-exact visualization), parallel to Track A.
+    [MaxLength(400)] public string? IfcPreviewUrn { get; set; }
+    [MaxLength(400)] public string? IfcDerivativeUrn { get; set; }
+    public CadTranslationStatus? IfcTranslationStatus { get; set; }
+    [MaxLength(2000)] public string? IfcTranslationError { get; set; }
     // JSONB column; schema defined in specs/13-metadata-schema.md. Null when parsing failed.
     public string? MetadataJson { get; set; }
     [MaxLength(2000)] public string? ParseError { get; set; }

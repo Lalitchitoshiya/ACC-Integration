@@ -13,6 +13,17 @@ namespace Connector.Api.Metadata;
 ///
 /// v1 simplification (see spec Open Questions): every node is a CIRCLE, differentiated only
 /// by layer/color, not a proper symbol block — real symbol blocks are a later refinement.
+///
+/// Attribute display (follow-up to "why does ACC show length=20 instead of the real
+/// 1609.34m"): the DXF's own drawing-space distance between two node coordinates is NOT
+/// the pipe's real hydraulic length — EPANET/WS Pro plan coordinates are schematic layout
+/// positions, not true-to-scale, and Model Derivative's Viewer only shows auto-computed
+/// geometric properties (Length/Radius/Area from the raw shape), never custom data.
+/// XDATA (extended entity data) was tried and empirically confirmed NOT to surface in the
+/// Viewer's properties panel at all — Model Derivative's DXF translator only extracts
+/// General/3D Visualization/Geometry categories, nothing custom. TEXT entities are the
+/// only mechanism guaranteed to show real values, since they're drawn geometry, not
+/// metadata subject to an extraction step that can silently drop it.
 /// </summary>
 public static class DxfWriter
 {
@@ -23,8 +34,11 @@ public static class DxfWriter
         ["reservoir"] = ("RESERVOIR", 6), // magenta (closest ACI to our purple)
     };
     private const string PipeLayer = "PIPE";
-    private const int PipeColor = 8; // dark grey
-    private const double NodeRadius = 0.35; // drawing units — small enough not to dominate real-scale coordinates
+    private const int PipeColor = 8;   // dark grey
+    private const string LabelLayer = "LABELS";
+    private const int LabelColor = 7;  // black/white — readable on either theme
+    private const double NodeRadius = 0.35;  // drawing units — small enough not to dominate real-scale coordinates
+    private const double TextHeight = 0.25;
 
     public static byte[]? Render(NetworkGraph graph)
     {
@@ -35,6 +49,14 @@ public static class DxfWriter
 
         void Code(int code, string value) { sb.Append(code).Append('\n').Append(value).Append('\n'); }
         void Num(int code, double value) { Code(code, value.ToString("0.######", CultureInfo.InvariantCulture)); }
+        void Text(string layer, double x, double y, string value)
+        {
+            if (value.Length == 0) return;
+            Code(0, "TEXT"); Code(8, layer);
+            Num(10, x); Num(20, y); Num(30, 0);
+            Num(40, TextHeight);
+            Code(1, value);
+        }
 
         // ---- HEADER ----
         Code(0, "SECTION"); Code(2, "HEADER");
@@ -43,8 +65,8 @@ public static class DxfWriter
 
         // ---- TABLES (layer definitions) ----
         Code(0, "SECTION"); Code(2, "TABLES");
-        Code(0, "TABLE"); Code(2, "LAYER"); Code(70, "4");
-        foreach (var (layer, color) in NodeStyle.Values.Append((PipeLayer, PipeColor)))
+        Code(0, "TABLE"); Code(2, "LAYER"); Code(70, "5");
+        foreach (var (layer, color) in NodeStyle.Values.Append((PipeLayer, PipeColor)).Append((LabelLayer, LabelColor)))
         {
             Code(0, "LAYER"); Code(2, layer); Code(70, "0"); Code(62, color.ToString()); Code(6, "CONTINUOUS");
         }
@@ -60,6 +82,18 @@ public static class DxfWriter
             Code(0, "LINE"); Code(8, PipeLayer);
             Num(10, a.X); Num(20, a.Y); Num(30, 0);
             Num(11, b.X); Num(21, b.Y); Num(31, 0);
+
+            // Real ID/length/diameter/material as a visible label at the pipe midpoint —
+            // drawn geometry, not metadata, so it can never be silently dropped or
+            // confused with the LINE's own auto-computed (schematic, not real) length.
+            var parts = new List<string>();
+            if (!string.IsNullOrEmpty(link.Id)) parts.Add(link.Id);
+            if (!string.IsNullOrEmpty(link.AssetId) && link.AssetId != link.Id) parts.Add($"Asset:{link.AssetId}");
+            if (link.Length is double len) parts.Add($"L={len:0.#}m");
+            if (link.Diameter is double dia) parts.Add($"D={dia:0.#}mm");
+            if (!string.IsNullOrEmpty(link.Material)) parts.Add(link.Material);
+            if (parts.Count > 0)
+                Text(LabelLayer, (a.X + b.X) / 2, (a.Y + b.Y) / 2, string.Join(" ", parts));
         }
 
         foreach (var n in graph.Nodes)
@@ -68,6 +102,9 @@ public static class DxfWriter
             Code(0, "CIRCLE"); Code(8, layer);
             Num(10, n.X); Num(20, n.Y); Num(30, 0);
             Num(40, NodeRadius);
+
+            var label = n.Elevation is double el ? $"{n.Id} elev={el:0.#}m" : n.Id;
+            Text(LabelLayer, n.X + NodeRadius * 1.5, n.Y, label);
         }
 
         Code(0, "ENDSEC");

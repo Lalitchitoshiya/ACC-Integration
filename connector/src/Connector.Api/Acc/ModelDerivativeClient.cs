@@ -18,27 +18,33 @@ public class ModelDerivativeClient(ApsTokenService tokens, IHttpClientFactory ht
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
     /// <summary>
-    /// Resolves the DXF version's underlying storage object, submits a translation job for
-    /// it, and returns the base64(no-padding) urn used both for polling and for the Viewer.
+    /// Resolves the companion file version's underlying storage object, submits a
+    /// translation job for it, and returns the base64(no-padding) urn used both for
+    /// polling and for the Viewer.
+    ///
+    /// conversionMethod: REQUIRED as "v4" for IFC inputs — the FR14.8 spike proved the
+    /// default routes IFC through the legacy Navisworks loader, which yields an EMPTY
+    /// model (zero objects/properties) with an overall "success" status. Null for DXF.
     /// </summary>
-    public async Task<string> SubmitTranslationJobAsync(string projectUrn, string dxfItemVersionUrn, CancellationToken ct)
+    public async Task<string> SubmitTranslationJobAsync(
+        string projectUrn, string itemVersionUrn, CancellationToken ct,
+        string[]? views = null, string? conversionMethod = null)
     {
         var http = await AuthedClientAsync(ct);
 
         var verRes = await http.GetAsync(
-            $"{ApsBase}/data/v1/projects/{projectUrn}/versions/{Uri.EscapeDataString(dxfItemVersionUrn)}", ct);
-        await ThrowIfFailed(verRes, "fetching DXF version for translation", ct);
+            $"{ApsBase}/data/v1/projects/{projectUrn}/versions/{Uri.EscapeDataString(itemVersionUrn)}", ct);
+        await ThrowIfFailed(verRes, "fetching companion version for translation", ct);
         using var verJson = JsonDocument.Parse(await verRes.Content.ReadAsStringAsync(ct));
         var objectId = verJson.RootElement.GetProperty("data").GetProperty("relationships")
             .GetProperty("storage").GetProperty("data").GetProperty("id").GetString()!;
 
         var urn = Base64UrlEncode(objectId);
 
-        var jobReq = new
-        {
-            input = new { urn },
-            output = new { formats = new[] { new { type = "svf2", views = new[] { "2d" } } } }
-        };
+        object format = conversionMethod is null
+            ? new { type = "svf2", views = views ?? ["2d"] }
+            : new { type = "svf2", views = views ?? ["2d"], advanced = new { conversionMethod } };
+        var jobReq = new { input = new { urn }, output = new { formats = new[] { format } } };
         var content = new StringContent(JsonSerializer.Serialize(jobReq, JsonOpts), Encoding.UTF8, "application/json");
         var jobRes = await http.PostAsync($"{ApsBase}/modelderivative/v2/designdata/job", content, ct);
         await ThrowIfFailed(jobRes, "submitting Model Derivative translation job", ct);
