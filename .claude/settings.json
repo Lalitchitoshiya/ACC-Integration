@@ -62,7 +62,9 @@
       "Bash(node -e 'console.log\\(encodeURIComponent\\('\\\\''/modelderivative/v2/designdata/dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6d2lwLmRtLnM5dmtkLzgzY2M2NzA1LWY4YjYtNDAzZC1hYWVhLTA2ZWUzNWVlOGQxOC5pZmM/manifest'\\\\''\\)\\)')",
       "Bash(curl -s --max-time 30 -H 'X-Dev-User: modeler@demo.local' http://localhost:5000/api/v1/aps/dm?path=__CMDSUB_OUTPUT__)",
       "Bash(curl -s --max-time 10 http://localhost:5000/)",
-      "Bash(curl -s --max-time 30 -H \"X-Dev-User: modeler@demo.local\" \"http://localhost:5000/api/v1/models/a90b7d84-e9a1-4557-b4ee-247d9033212e/versions\")"
+      "Bash(curl -s --max-time 30 -H \"X-Dev-User: modeler@demo.local\" \"http://localhost:5000/api/v1/models/a90b7d84-e9a1-4557-b4ee-247d9033212e/versions\")",
+      "PowerShell(Get-Process -Name \"Connector.Api\" -ErrorAction SilentlyContinue | Stop-Process -Force -Confirm:$false; Start-Sleep 2; Set-Location \"d:\\\\ACC Integration\\\\connector\"; $b = dotnet build AccWaterConnector.slnx 2>&1 | Select-String -Pattern \"error CS|Build succeeded\" | Select-Object -First 6; $b; Start-Process -FilePath \"dotnet\" -ArgumentList \"run --project src\\\\Connector.Api --urls http://localhost:5000\" -WorkingDirectory \"d:\\\\ACC Integration\\\\connector\" -WindowStyle Hidden; Start-Sleep 12; try { \\(Invoke-RestMethod http://localhost:5000/health -TimeoutSec 5\\).status } catch { \"not up\" })",
+      "Bash(node -e 'console.log\\(encodeURIComponent\\('\\\\''/modelderivative/v2/designdata/dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6d2lwLmRtLnM5dmtkLzkyODBkNWNjLTc1NzAtNDRkNy1iODJlLWI5Njg1OWVhN2UyNS5pZmM/manifest'\\\\''\\)\\)')"
     ]
   }
 }

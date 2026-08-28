@@ -24,9 +24,14 @@ namespace Connector.Api.Metadata;
 /// The translation job for the produced file MUST use conversionMethod "v4" — the
 /// default legacy loader yields an empty model with a success status (spike finding #1).
 ///
-/// Coordinates are the schematic plan x/y (not to scale — same as DXF/PNG); Z is flat.
-/// Mixing schematic x/y with real elevations as Z would produce absurd aspect ratios,
-/// so elevation is carried as a property instead (FR14.13 decision).
+/// Vertical dimension (FR14.13, revised 2026-08-28): X/Y are schematic plan coordinates
+/// (not to scale — same as DXF/PNG), while elevations are real metres, so raw elevation
+/// as Z would put a ~60-unit-wide network 210 m in the air — geometrically absurd and
+/// visually unusable. Instead Z is *relative and exaggerated*: the lowest node sits at
+/// Z=0 and the range is scaled to a fraction of the plan extent (standard hydraulic
+/// long-section practice). Pipes slope between raised endpoints, so the third dimension
+/// is genuinely visible. The TRUE elevation is always carried unscaled in the property
+/// set — geometry is indicative, properties remain the source of truth.
 /// </summary>
 public static class IfcWriter
 {
@@ -35,6 +40,9 @@ public static class IfcWriter
     private const double DefaultPipeRadius = 0.12;  // when diameter unknown
     private const double NodeRadius = 0.30;
     private const double NodeHeight = 0.60;
+    // Elevation range is scaled to this fraction of the plan extent — enough relief to
+    // read high/low ground at a glance without the model becoming a spike.
+    private const double VerticalReliefFraction = 0.25;
 
     private sealed class Step
     {
@@ -72,6 +80,21 @@ public static class IfcWriter
 
         var byId = graph.Nodes.GroupBy(n => n.Id).ToDictionary(g => g.Key, g => g.First());
         var s = new Step();
+
+        // ---- Vertical exaggeration (see class doc) ----
+        // Map real elevations onto a Z range proportional to the plan extent, anchored so
+        // the lowest node sits at Z=0. Nodes without elevation stay at the base plane.
+        var planExtent = Math.Max(
+            graph.Nodes.Max(n => n.X) - graph.Nodes.Min(n => n.X),
+            graph.Nodes.Max(n => n.Y) - graph.Nodes.Min(n => n.Y));
+        var elevations = graph.Nodes.Where(n => n.Elevation is not null).Select(n => n.Elevation!.Value).ToList();
+        var minElev = elevations.Count > 0 ? elevations.Min() : 0;
+        var elevSpan = elevations.Count > 0 ? elevations.Max() - minElev : 0;
+        // Flat network (all nodes same elevation, or none recorded) → no relief, Z stays 0.
+        var zScale = elevSpan > 1e-9 && planExtent > 1e-9
+            ? planExtent * VerticalReliefFraction / elevSpan
+            : 0;
+        double ZOf(GraphNode n) => n.Elevation is double e ? (e - minElev) * zScale : 0;
 
         // ---- Owner history (spike finding #3: required for the file to load) ----
         var person = s.Add("IFCPERSON($,$,'Connector',$,$,$,$,$)");
@@ -151,7 +174,8 @@ public static class IfcWriter
         // ---- Nodes ----
         foreach (var n in graph.Nodes)
         {
-            var solid = SolidAlong(n.X, n.Y, -NodeHeight / 2, n.X, n.Y, NodeHeight / 2, NodeRadius);
+            var nz = ZOf(n);
+            var solid = SolidAlong(n.X, n.Y, nz - NodeHeight / 2, n.X, n.Y, nz + NodeHeight / 2, NodeRadius);
             var shape = ShapeOf(solid);
             var name = Str($"{char.ToUpperInvariant(n.Type[0])}{n.Type[1..]} {n.Id}");
             var entity = n.Type switch
@@ -175,7 +199,9 @@ public static class IfcWriter
             var radius = link.Diameter is double diaMm
                 ? Math.Max(MinPipeRadius, diaMm * PipeRadiusScale)
                 : DefaultPipeRadius;
-            var solid = SolidAlong(a.X, a.Y, 0, b.X, b.Y, 0, radius);
+            // Sloped between the two nodes' exaggerated elevations — SolidAlong already
+            // handles arbitrary 3D directions, so pipes tilt with no extra work.
+            var solid = SolidAlong(a.X, a.Y, ZOf(a), b.X, b.Y, ZOf(b), radius);
             var shape = ShapeOf(solid);
             var displayId = link.Id ?? $"{link.UsId}-{link.DsId}";
             var name = Str($"Pipe {displayId}");
