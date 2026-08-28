@@ -133,12 +133,24 @@ public static class NetworkGraphExtractor
                     if (f.Length >= 2 && f[0].Equals("Units", StringComparison.OrdinalIgnoreCase))
                         unitsToken = f[1];
                     break;
+                // All three node sections carry a height in column 1, but they mean
+                // subtly different things in EPANET: junctions/tanks give ground
+                // elevation, reservoirs give total head (water surface). Treated
+                // uniformly as "elevation" here — without them tanks and reservoirs
+                // had no height at all and sank to the base plane in the 3D view,
+                // inverting the real network profile (tank is usually the high point).
                 case "JUNCTIONS":
                     types[f[0]] = "junction";
-                    if (Num(f, 1) is double elev) rawElevations[f[0]] = elev;
+                    if (Num(f, 1) is double jElev) rawElevations[f[0]] = jElev;
                     break;
-                case "RESERVOIRS": types[f[0]] = "reservoir"; break;
-                case "TANKS": types[f[0]] = "tank"; break;
+                case "RESERVOIRS":
+                    types[f[0]] = "reservoir";
+                    if (Num(f, 1) is double rHead) rawElevations[f[0]] = rHead;
+                    break;
+                case "TANKS":
+                    types[f[0]] = "tank";
+                    if (Num(f, 1) is double tElev) rawElevations[f[0]] = tElev;
+                    break;
                 case "PIPES":
                     // EPANET PIPES: ID Node1 Node2 Length Diameter Roughness ...
                     if (f.Length >= 3) rawLinks.Add((f[0], f[1], f[2], Num(f, 3), Num(f, 4)));
