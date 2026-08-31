@@ -183,6 +183,10 @@ public static class IfcWriter
             contained.Add(entity);
 
             var props = new List<int> { PropText("ElementId", n.Id), PropText("Type", n.Type) };
+            // Same rule as links: only worth a property when it says something the
+            // ElementId doesn't. Without this, nodes carried no asset identity at all,
+            // leaving node_id as the only key back to WS Pro.
+            if (n.AssetId is not null && n.AssetId != n.Id) props.Add(PropText("AssetId", n.AssetId));
             if (n.Elevation is double el) props.Add(PropLenM("Elevation", el));
             AttachPset(entity, "Pset_ACCWaterHydraulics", props);
         }

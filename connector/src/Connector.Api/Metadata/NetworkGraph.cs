@@ -13,7 +13,8 @@ namespace Connector.Api.Metadata;
 // drawing-space distance between node coordinates is NOT the real pipe length (EPANET/
 // WS Pro plan coordinates are schematic, not true-to-scale), so the real values must be
 // attached as data, not inferred from geometry.
-public record GraphNode(string Id, double X, double Y, string Type, double? Elevation = null);
+public record GraphNode(string Id, double X, double Y, string Type, double? Elevation = null,
+    string? AssetId = null);
 // Id: the link's own identity — WS Pro pipes have no standalone id field (keyed by
 // endpoints + suffix instead), so it's synthesized as "us-ds[.suffix]"; EPANET INP pipes
 // have a real id (the first column) and no separate AssetId concept.
@@ -23,9 +24,17 @@ public record NetworkGraph(List<GraphNode> Nodes, List<GraphLink> Links);
 
 public static class NetworkGraphExtractor
 {
+    // Must stay in step with WsProMetadataExtractor.NodeTables: the dashboard counted
+    // transfer nodes/wells/hydrants while the geometry path silently dropped them, so a
+    // model could report 36 nodes and draw 35. Worse, dropping a node also drops every
+    // link attached to it (see the byId lookup in IfcWriter), so one unmapped table can
+    // remove pipes from the drawing too. Only "tank" and "reservoir" map to a bespoke
+    // IFC entity (IfcTank); every other type falls through to IfcFlowFitting, which is
+    // the right generic for a node whose shape we don't model.
     private static readonly Dictionary<string, string> NodeTables = new()
     {
         ["wn_node"] = "junction", ["wn_reservoir"] = "tank", ["wn_fixed_head"] = "reservoir",
+        ["wn_transfer_node"] = "transferNode", ["wn_well"] = "well", ["wn_hydrant"] = "hydrant",
     };
     private static readonly HashSet<string> LinkTables = ["wn_pipe", "wn_valve", "wn_float_valve", "wn_non_return_valve", "wn_pst", "wn_meter"];
 
@@ -75,7 +84,8 @@ public static class NetworkGraphExtractor
             if (NodeTables.TryGetValue(table, out var nodeType))
             {
                 if (Num("x") is double x && Num("y") is double y)
-                    nodes.Add(new GraphNode(Get("node_id") ?? "", x, y, nodeType, Num("z") ?? Num("ground_level")));
+                    nodes.Add(new GraphNode(Get("node_id") ?? "", x, y, nodeType,
+                        Num("z") ?? Num("ground_level"), Get("asset_id")));
             }
             else if (LinkTables.Contains(table))
             {
