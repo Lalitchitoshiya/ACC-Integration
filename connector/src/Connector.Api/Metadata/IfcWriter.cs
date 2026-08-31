@@ -204,22 +204,45 @@ public static class IfcWriter
             var solid = SolidAlong(a.X, a.Y, ZOf(a), b.X, b.Y, ZOf(b), radius);
             var shape = ShapeOf(solid);
             var displayId = link.Id ?? $"{link.UsId}-{link.DsId}";
-            var name = Str($"Pipe {displayId}");
-            // Pumps/valves have their own semantic entities (spec FR14.10). Our extractor
-            // does not currently flag link subtype, so v1 emits IfcPipeSegment for all —
-            // recorded as a known simplification; revisit when GraphLink carries a type.
-            var entity = s.Add($"IFCPIPESEGMENT('{NewIfcGuid()}',#{oh},{name},$,$,#{identityPlace},#{shape},{Str(displayId)},.RIGIDSEGMENT.)");
+            // Semantic entity per link kind (spec FR14.10). Previously every link emitted
+            // as IfcPipeSegment, so a pump station read "Pipe 9-10.1" in the ACC viewer.
+            // IfcPump/IfcValve/IfcFlowMeter are all IFC4 MEP distribution elements and
+            // take the same constructor shape as IfcPipeSegment minus the type enum.
+            var entity = link.Kind switch
+            {
+                LinkKind.Pump =>
+                    s.Add($"IFCPUMP('{NewIfcGuid()}',#{oh},{Str($"Pump {displayId}")},$,$,#{identityPlace},#{shape},{Str(displayId)},.NOTDEFINED.)"),
+                LinkKind.Valve =>
+                    s.Add($"IFCVALVE('{NewIfcGuid()}',#{oh},{Str($"Valve {displayId}")},$,$,#{identityPlace},#{shape},{Str(displayId)},.NOTDEFINED.)"),
+                LinkKind.Meter =>
+                    s.Add($"IFCFLOWMETER('{NewIfcGuid()}',#{oh},{Str($"Meter {displayId}")},$,$,#{identityPlace},#{shape},{Str(displayId)},.NOTDEFINED.)"),
+                // No open-channel entity exists in IFC4; CULVERT is the closest standard
+                // predefined type for a conduit that is not a pressurised pipe.
+                LinkKind.OpenChannel =>
+                    s.Add($"IFCPIPESEGMENT('{NewIfcGuid()}',#{oh},{Str($"Channel {displayId}")},$,$,#{identityPlace},#{shape},{Str(displayId)},.CULVERT.)"),
+                _ =>
+                    s.Add($"IFCPIPESEGMENT('{NewIfcGuid()}',#{oh},{Str($"Pipe {displayId}")},$,$,#{identityPlace},#{shape},{Str(displayId)},.RIGIDSEGMENT.)"),
+            };
             contained.Add(entity);
 
-            var props = new List<int> { PropText("ElementId", displayId) };
+            var props = new List<int> { PropText("ElementId", displayId), PropText("Type", link.Kind) };
             if (link.AssetId is not null && link.AssetId != displayId) props.Add(PropText("AssetId", link.AssetId));
             if (link.Length is double lenM) props.Add(PropLenM("Length", lenM));
             // Text, not a length measure: the Viewer normalizes measures to the project
             // unit (a mm-united 355.6 displayed as "0.356 m" — correct but not the
             // display-exact match with WS Pro's "Diameter (mm) 355.6" the spec requires).
-            if (link.Diameter is double dMm) props.Add(PropText("Diameter",
+            // A non-round conduit reports its cross-section instead of a bore it lacks.
+            if (link.CrossSection is string xs) props.Add(PropText("CrossSection", xs));
+            else if (link.Diameter is double dMm) props.Add(PropText("Diameter",
                 dMm.ToString("0.#", CultureInfo.InvariantCulture) + " mm"));
             if (!string.IsNullOrEmpty(link.Material)) props.Add(PropText("Material", link.Material));
+            // Pump-station fields, in place of the Length/Diameter a pump doesn't have.
+            // Text with an explicit unit for the same reason Diameter is (see above): the
+            // Viewer renormalizes real length measures to the project unit.
+            if (link.DutyHead is double head) props.Add(PropText("DutyHead",
+                head.ToString("0.##", CultureInfo.InvariantCulture) + " m"));
+            if (link.PowerConsumption is double kw) props.Add(PropText("PowerConsumption",
+                kw.ToString("0.##", CultureInfo.InvariantCulture) + " kW"));
             props.Add(PropText("UpstreamNode", link.UsId));
             props.Add(PropText("DownstreamNode", link.DsId));
             AttachPset(entity, "Pset_ACCWaterHydraulics", props);
