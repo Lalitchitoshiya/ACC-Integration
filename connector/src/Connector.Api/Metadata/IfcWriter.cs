@@ -137,6 +137,25 @@ public static class IfcWriter
             s.Add($"IFCRELDEFINESBYPROPERTIES('{NewIfcGuid()}',#{oh},$,$,(#{element}),#{pset})");
         }
 
+        // Appends the carried WS Pro columns after the curated ones. Written as text so
+        // the value reaches ACC byte-for-byte as the exporter wrote it: a bare
+        // IFCLENGTHMEASURE is renormalised to the project unit by the Viewer (the reason
+        // Diameter is text below), and there is no reliable way to know which of ~60
+        // arbitrary columns are lengths. Typed/united properties are a later stage.
+        // `taken` guards against a curated name and a carried column colliding, which
+        // would otherwise show the same field twice in the palette.
+        void AppendCarried(List<int> props, HashSet<string> taken, IReadOnlyList<GraphProperty>? carried)
+        {
+            foreach (var p in carried ?? [])
+            {
+                // Dedupe on the raw column, not the label: two raw columns could in
+                // principle map to one label, and dropping by label would hide a field.
+                if (!taken.Add(p.Name)) continue;
+                props.Add(PropText(PropertyCatalogue.LabelFor(p.Name),
+                                   PropertyCatalogue.DisplayValue(p.Name, p.Value)));
+            }
+        }
+
         // Cylinder along an arbitrary segment: circle profile extruded along local Z of a
         // position whose Axis is the segment direction. RefDirection must never be
         // parallel to Axis — computed orthogonally.
@@ -188,6 +207,7 @@ public static class IfcWriter
             // leaving node_id as the only key back to WS Pro.
             if (n.AssetId is not null && n.AssetId != n.Id) props.Add(PropText("AssetId", n.AssetId));
             if (n.Elevation is double el) props.Add(PropLenM("Elevation", el));
+            AppendCarried(props, ["ElementId", "Type", "AssetId", "Elevation"], n.Properties);
             AttachPset(entity, "Pset_ACCWaterHydraulics", props);
         }
 
@@ -222,6 +242,8 @@ public static class IfcWriter
             if (!string.IsNullOrEmpty(link.Material)) props.Add(PropText("Material", link.Material));
             props.Add(PropText("UpstreamNode", link.UsId));
             props.Add(PropText("DownstreamNode", link.DsId));
+            AppendCarried(props, ["ElementId", "AssetId", "Length", "Diameter", "Material",
+                "UpstreamNode", "DownstreamNode"], link.Properties);
             AttachPset(entity, "Pset_ACCWaterHydraulics", props);
         }
 

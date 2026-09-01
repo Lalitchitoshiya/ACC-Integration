@@ -13,13 +13,29 @@ namespace Connector.Api.Metadata;
 // drawing-space distance between node coordinates is NOT the real pipe length (EPANET/
 // WS Pro plan coordinates are schematic, not true-to-scale), so the real values must be
 // attached as data, not inferred from geometry.
+/// <summary>
+/// One WS Pro column carried straight through to the IFC property set.
+///
+/// The value stays the exact string the exporter wrote — no parsing, rounding or
+/// reformatting — so a number never loses precision on the way to ACC and an
+/// unrecognised field is still preserved rather than dropped.
+/// </summary>
+public readonly record struct GraphProperty(string Name, string Value);
+
+// Properties is the open-ended half of the model: WS Pro tables carry 45–69 non-flag
+// columns each, and which of them a given model populates varies enormously (an
+// EPANET-derived network fills 6 node columns; a real utility export fills far more).
+// Naming a field per property would mean guessing which ones matter and silently
+// dropping the rest, so everything populated is carried and the writer decides how to
+// present it. Adding a WS Pro field then needs no code change here at all.
 public record GraphNode(string Id, double X, double Y, string Type, double? Elevation = null,
-    string? AssetId = null);
+    string? AssetId = null, IReadOnlyList<GraphProperty>? Properties = null);
 // Id: the link's own identity — WS Pro pipes have no standalone id field (keyed by
 // endpoints + suffix instead), so it's synthesized as "us-ds[.suffix]"; EPANET INP pipes
 // have a real id (the first column) and no separate AssetId concept.
 public record GraphLink(string UsId, string DsId, double? Length = null, double? Diameter = null,
-    string? Material = null, string? Id = null, string? AssetId = null);
+    string? Material = null, string? Id = null, string? AssetId = null,
+    IReadOnlyList<GraphProperty>? Properties = null);
 public record NetworkGraph(List<GraphNode> Nodes, List<GraphLink> Links);
 
 public static class NetworkGraphExtractor
@@ -51,12 +67,52 @@ public static class NetworkGraphExtractor
         return null;
     }
 
+    // Columns the graph already surfaces under a curated name, or that describe geometry
+    // rather than the asset. Carrying these in the bag as well would duplicate rows in
+    // the ACC property palette ("length" beside "Length"), so they are claimed here and
+    // emitted by the writer under their proper names instead.
+    private static readonly HashSet<string> CuratedColumns = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "table", "node_id", "asset_id", "x", "y", "z",
+        "us_node_id", "ds_node_id", "link_suffix",
+        "length", "diameter", "material",
+        "bends", "spatial_data",
+    };
+
+    /// <summary>
+    /// Every populated, non-flag, non-curated column of one CSV row, in the order the
+    /// exporter wrote them — WS Pro groups related fields together, so that order is
+    /// worth keeping for the property palette.
+    /// </summary>
+    private static List<GraphProperty> BagOf(string[] headers, string[] f)
+    {
+        var bag = new List<GraphProperty>();
+        for (var i = 0; i < headers.Length && i < f.Length; i++)
+        {
+            var name = headers[i];
+            var value = f[i].Trim();
+            if (value.Length == 0) continue;
+            // WS Pro emits a per-field "<name>_flag" column recording how the value was
+            // set (#I = inherited, etc.). That is editor bookkeeping, not asset data.
+            if (name.EndsWith("_flag", StringComparison.OrdinalIgnoreCase)) continue;
+            if (CuratedColumns.Contains(name)) continue;
+            // Nested structures serialise as "#<WSStructure:0x0001ee73e70410>" — a Ruby
+            // object reference the exporter's v.to_s could not walk (pump curves,
+            // customer points, demand profiles). It is noise, not data; reaching the
+            // real contents needs a change in upload_to_acc.rb, not here.
+            if (value.StartsWith("#<", StringComparison.Ordinal)) continue;
+            bag.Add(new GraphProperty(name, value));
+        }
+        return bag;
+    }
+
     private static NetworkGraph ParseWsProCsv(string text)
     {
         var nodes = new List<GraphNode>();
         var links = new List<GraphLink>();
         string? table = null;
         Dictionary<string, int>? cols = null;
+        string[]? headers = null;
 
         foreach (var raw in text.Split('\n'))
         {
@@ -65,13 +121,14 @@ public static class NetworkGraphExtractor
             {
                 table = line["## table=".Length..].Trim();
                 cols = null;
+                headers = null;
                 continue;
             }
             if (table is null || line.Length == 0) continue;
 
             if (cols is null)
             {
-                var headers = line.Split(',');
+                headers = line.Split(',');
                 cols = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
                 for (var i = 0; i < headers.Length; i++) cols.TryAdd(headers[i], i);
                 continue;
@@ -85,7 +142,8 @@ public static class NetworkGraphExtractor
             {
                 if (Num("x") is double x && Num("y") is double y)
                     nodes.Add(new GraphNode(Get("node_id") ?? "", x, y, nodeType,
-                        Num("z") ?? Num("ground_level"), Get("asset_id")));
+                        Num("z") ?? Num("ground_level"), Get("asset_id"),
+                        BagOf(headers!, f)));
             }
             else if (LinkTables.Contains(table))
             {
@@ -95,7 +153,7 @@ public static class NetworkGraphExtractor
                     var suffix = Get("link_suffix");
                     var linkId = $"{us}-{ds}{(suffix is not null ? $".{suffix}" : "")}";
                     links.Add(new GraphLink(us, ds, Num("length"), Num("diameter"), Get("material"),
-                        linkId, Get("asset_id")));
+                        linkId, Get("asset_id"), BagOf(headers!, f)));
                 }
             }
         }
