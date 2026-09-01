@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Numerics;
 using System.Text;
+using G = Connector.Api.Metadata.PropertyCatalogue.Group;
 
 namespace Connector.Api.Metadata;
 
@@ -144,16 +145,29 @@ public static class IfcWriter
         // arbitrary columns are lengths. Typed/united properties are a later stage.
         // `taken` guards against a curated name and a carried column colliding, which
         // would otherwise show the same field twice in the palette.
-        void AppendCarried(List<int> props, HashSet<string> taken, IReadOnlyList<GraphProperty>? carried)
+        void AppendCarried(List<(string Group, int Id)> props, HashSet<string> taken,
+            IReadOnlyList<GraphProperty>? carried)
         {
             foreach (var p in carried ?? [])
             {
                 // Dedupe on the raw column, not the label: two raw columns could in
                 // principle map to one label, and dropping by label would hide a field.
                 if (!taken.Add(p.Name)) continue;
-                props.Add(PropText(PropertyCatalogue.LabelFor(p.Name),
-                                   PropertyCatalogue.DisplayValue(p.Name, p.Value)));
+                props.Add((PropertyCatalogue.GroupFor(p.Name),
+                    PropText(PropertyCatalogue.LabelFor(p.Name),
+                             PropertyCatalogue.DisplayValue(p.Name, p.Value))));
             }
+        }
+
+        // One IfcPropertySet per group, in a deliberate display order. Emitting several
+        // psets rather than one is what makes the Viewer show collapsible sections
+        // instead of a single undifferentiated run of 18+ rows.
+        void AttachGrouped(int element, List<(string Group, int Id)> props)
+        {
+            foreach (var g in props.GroupBy(p => p.Group)
+                         .OrderBy(g => Array.IndexOf(PropertyCatalogue.GroupOrder, g.Key) is var i && i < 0
+                             ? int.MaxValue : i))
+                AttachPset(element, g.Key, g.Select(p => p.Id).ToList());
         }
 
         // Cylinder along an arbitrary segment: circle profile extruded along local Z of a
@@ -201,14 +215,19 @@ public static class IfcWriter
             };
             contained.Add(entity);
 
-            var props = new List<int> { PropText("ElementId", n.Id), PropText("Type", n.Type) };
+            var props = new List<(string, int)>
+            {
+                (G.Identity, PropText("ElementId", n.Id)),
+                (G.Identity, PropText("Type", n.Type)),
+            };
             // Same rule as links: only worth a property when it says something the
             // ElementId doesn't. Without this, nodes carried no asset identity at all,
             // leaving node_id as the only key back to WS Pro.
-            if (n.AssetId is not null && n.AssetId != n.Id) props.Add(PropText("AssetId", n.AssetId));
-            if (n.Elevation is double el) props.Add(PropLenM("Elevation", el));
+            if (n.AssetId is not null && n.AssetId != n.Id)
+                props.Add((G.Identity, PropText("AssetId", n.AssetId)));
+            if (n.Elevation is double el) props.Add((G.Levels, PropLenM("Elevation", el)));
             AppendCarried(props, ["ElementId", "Type", "AssetId", "Elevation"], n.Properties);
-            AttachPset(entity, "Pset_ACCWaterHydraulics", props);
+            AttachGrouped(entity, props);
         }
 
         // ---- Links ----
@@ -231,20 +250,22 @@ public static class IfcWriter
             var entity = s.Add($"IFCPIPESEGMENT('{NewIfcGuid()}',#{oh},{name},$,$,#{identityPlace},#{shape},{Str(displayId)},.RIGIDSEGMENT.)");
             contained.Add(entity);
 
-            var props = new List<int> { PropText("ElementId", displayId) };
-            if (link.AssetId is not null && link.AssetId != displayId) props.Add(PropText("AssetId", link.AssetId));
-            if (link.Length is double lenM) props.Add(PropLenM("Length", lenM));
+            var props = new List<(string, int)> { (G.Identity, PropText("ElementId", displayId)) };
+            if (link.AssetId is not null && link.AssetId != displayId)
+                props.Add((G.Identity, PropText("AssetId", link.AssetId)));
+            if (link.Length is double lenM) props.Add((G.Hydraulics, PropLenM("Length", lenM)));
             // Text, not a length measure: the Viewer normalizes measures to the project
             // unit (a mm-united 355.6 displayed as "0.356 m" — correct but not the
             // display-exact match with WS Pro's "Diameter (mm) 355.6" the spec requires).
-            if (link.Diameter is double dMm) props.Add(PropText("Diameter",
-                dMm.ToString("0.#", CultureInfo.InvariantCulture) + " mm"));
-            if (!string.IsNullOrEmpty(link.Material)) props.Add(PropText("Material", link.Material));
-            props.Add(PropText("UpstreamNode", link.UsId));
-            props.Add(PropText("DownstreamNode", link.DsId));
+            if (link.Diameter is double dMm) props.Add((G.Hydraulics, PropText("Diameter",
+                dMm.ToString("0.#", CultureInfo.InvariantCulture) + " mm")));
+            if (!string.IsNullOrEmpty(link.Material))
+                props.Add((G.Asset, PropText("Material", link.Material)));
+            props.Add((G.Identity, PropText("UpstreamNode", link.UsId)));
+            props.Add((G.Identity, PropText("DownstreamNode", link.DsId)));
             AppendCarried(props, ["ElementId", "AssetId", "Length", "Diameter", "Material",
                 "UpstreamNode", "DownstreamNode"], link.Properties);
-            AttachPset(entity, "Pset_ACCWaterHydraulics", props);
+            AttachGrouped(entity, props);
         }
 
         if (contained.Count > 0)
