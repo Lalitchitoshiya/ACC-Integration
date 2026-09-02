@@ -54,6 +54,7 @@ Deliver a cloud collaboration layer, built on ACC, that lets distributed teams t
 - API contracts (endpoints, request/response shapes): [11-api-contracts.md](11-api-contracts.md)
 - Permissions matrix & error handling conventions: [12-permissions-errors.md](12-permissions-errors.md)
 - Model metadata schema (hydraulic network structure captured per version): [13-metadata-schema.md](13-metadata-schema.md)
+- CAD visualization (Phase 6, two tracks — DXF schematic + IFC property-exact → Autodesk Viewer): [14-cad-visualization.md](14-cad-visualization.md)
 
 ## Open Questions
 

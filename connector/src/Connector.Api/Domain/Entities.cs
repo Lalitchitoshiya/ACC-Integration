@@ -12,6 +12,9 @@ public enum ToolType { InfoWorksWSPro } // Phase 4 adds InfoWaterPro, InfoDraina
 
 public enum ReviewStatus { Draft, InReview, Approved, Rejected }
 
+// specs/14-cad-visualization.md — Model Derivative translation job state
+public enum CadTranslationStatus { Pending, Success, Failed }
+
 public class Project
 {
     public Guid Id { get; set; }
@@ -67,6 +70,21 @@ public class ModelVersion
     [MaxLength(100)] public required string SourceToolVersion { get; set; }
     public ReviewStatus ReviewStatus { get; set; } = ReviewStatus.Draft;
     public long FileSizeBytes { get; set; }
+    // Set when a download attempt finds the file gone from ACC (deleted/moved outside
+    // the connector). Never auto-cleared and never causes the row to be deleted — audit
+    // history (specs/07) must survive external deletion; this only flags it honestly.
+    public bool AccFileMissing { get; set; }
+    public DateTimeOffset? AccMissingDetectedAt { get; set; }
+    // specs/14-cad-visualization.md — DXF companion + Model Derivative translation state.
+    [MaxLength(400)] public string? CadPreviewUrn { get; set; }
+    [MaxLength(400)] public string? DerivativeUrn { get; set; }
+    public CadTranslationStatus? TranslationStatus { get; set; }
+    [MaxLength(2000)] public string? TranslationError { get; set; }
+    // specs/14 Track B — IFC companion (property-exact visualization), parallel to Track A.
+    [MaxLength(400)] public string? IfcPreviewUrn { get; set; }
+    [MaxLength(400)] public string? IfcDerivativeUrn { get; set; }
+    public CadTranslationStatus? IfcTranslationStatus { get; set; }
+    [MaxLength(2000)] public string? IfcTranslationError { get; set; }
     // JSONB column; schema defined in specs/13-metadata-schema.md. Null when parsing failed.
     public string? MetadataJson { get; set; }
     [MaxLength(2000)] public string? ParseError { get; set; }

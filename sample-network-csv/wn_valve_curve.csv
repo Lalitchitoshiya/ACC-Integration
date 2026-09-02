@@ -1,0 +1,7 @@
+table,curve_id,curve_id_flag,curve,notes,user_defined,description,description_flag
+wn_valve_curve,PLUG,,#<WSStructure:0x000217dc2c4a98>,,false,,
+wn_valve_curve,BALL,,#<WSStructure:0x000217dc2c4160>,,false,,
+wn_valve_curve,BUTTERFLY,,#<WSStructure:0x000217dc2bf728>,,false,,
+wn_valve_curve,GATE,,#<WSStructure:0x000217dc2bee90>,,false,,
+wn_valve_curve,NEEDLE,,#<WSStructure:0x000217dc2be620>,,false,,
+wn_valve_curve,DefaultFLV,,#<WSStructure:0x000217dc2bdd88>,,false,,

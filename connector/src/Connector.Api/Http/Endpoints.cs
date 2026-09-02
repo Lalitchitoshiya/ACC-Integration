@@ -96,7 +96,8 @@ public static class Endpoints
 
         api.MapPost("/models/{modelId:guid}/versions", async (
             Guid modelId, HttpRequest request, ConnectorDbContext db, CurrentUserService current,
-            IAccClient acc, IEnumerable<IMetadataExtractor> extractors, CancellationToken ct) =>
+            IAccClient acc, ModelDerivativeClient derivative,
+            IEnumerable<IMetadataExtractor> extractors, CancellationToken ct) =>
         {
             var user = await current.GetUserAsync(ct);
             if (user is null) return ApiError.Unauthenticated();
@@ -151,9 +152,79 @@ public static class Endpoints
                 meta = await extractor.ExtractAsync(stream, file.FileName, ct);
             }
 
-            // 3. Persist Version record linked to the ACC version (spec 04: no drift).
+            // 2b. CAD companions + Model Derivative translation (specs/14, both tracks).
+            // Best-effort throughout: a companion/translation failure never blocks the real
+            // upload (FR14.6/FR14.14), and each track fails independently of the other.
             var versionNumber = (await db.ModelVersions.Where(v => v.ModelId == modelId)
                 .MaxAsync(v => (int?)v.VersionNumber, ct) ?? 0) + 1;
+            string? cadPreviewUrn = null, derivativeUrn = null, translationError = null;
+            CadTranslationStatus? translationStatus = null;
+            string? ifcPreviewUrn = null, ifcDerivativeUrn = null, ifcTranslationError = null;
+            CadTranslationStatus? ifcTranslationStatus = null;
+
+            NetworkGraph? graph = null;
+            try
+            {
+                await using var geomStream = file.OpenReadStream();
+                graph = await NetworkGraphExtractor.ExtractAsync(geomStream, file.FileName, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                translationError = ifcTranslationError = $"Geometry extraction failed: {ex.Message}";
+                translationStatus = ifcTranslationStatus = CadTranslationStatus.Failed;
+            }
+
+            // Track A: DXF (schematic; real values as drawn TEXT labels)
+            if (graph is not null)
+            {
+                try
+                {
+                    var dxfBytes = DxfWriter.Render(graph);
+                    if (dxfBytes is not null)
+                    {
+                        using var dxfStream = new MemoryStream(dxfBytes);
+                        var dxfName = $"{Path.GetFileNameWithoutExtension(file.FileName)}_v{versionNumber}.dxf";
+                        var dxfUploaded = await acc.UploadVersionAsync(
+                            project!.AccProjectUrn, model.AccFolderUrn, dxfName, dxfStream, ct);
+                        cadPreviewUrn = dxfUploaded.ItemVersionUrn;
+                        derivativeUrn = await derivative.SubmitTranslationJobAsync(
+                            project.AccProjectUrn, cadPreviewUrn, ct);
+                        translationStatus = CadTranslationStatus.Pending;
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    translationStatus = CadTranslationStatus.Failed;
+                    translationError = ex.Message;
+                }
+
+                // Track B: IFC (semantic; property-exact — spec FR14.9–FR14.14)
+                try
+                {
+                    var ifcBytes = IfcWriter.Render(graph, model.Name);
+                    if (ifcBytes is not null)
+                    {
+                        using var ifcStream = new MemoryStream(ifcBytes);
+                        var ifcName = $"{Path.GetFileNameWithoutExtension(file.FileName)}_v{versionNumber}.ifc";
+                        var ifcUploaded = await acc.UploadVersionAsync(
+                            project!.AccProjectUrn, model.AccFolderUrn, ifcName, ifcStream, ct);
+                        ifcPreviewUrn = ifcUploaded.ItemVersionUrn;
+                        // conversionMethod v4 is MANDATORY for IFC (spike finding: default
+                        // legacy loader yields an empty model with a success status).
+                        ifcDerivativeUrn = await derivative.SubmitTranslationJobAsync(
+                            project.AccProjectUrn, ifcPreviewUrn, ct,
+                            views: ["2d", "3d"], conversionMethod: "v4");
+                        ifcTranslationStatus = CadTranslationStatus.Pending;
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    ifcTranslationStatus = CadTranslationStatus.Failed;
+                    ifcTranslationError = ex.Message;
+                }
+            }
+
+            // 3. Persist Version record linked to the ACC version (spec 04: no drift).
             var version = new ModelVersion
             {
                 Id = Guid.NewGuid(), ModelId = modelId, VersionNumber = versionNumber,
@@ -163,11 +234,25 @@ public static class Endpoints
                 SourceTool = sourceTool, SourceToolVersion = sourceToolVersion,
                 ReviewStatus = ReviewStatus.Draft, FileSizeBytes = file.Length,
                 MetadataJson = meta.Metadata is null ? null : JsonSerializer.Serialize(meta.Metadata, JsonOpts),
-                ParseError = meta.ParseError
+                ParseError = meta.ParseError,
+                CadPreviewUrn = cadPreviewUrn, DerivativeUrn = derivativeUrn,
+                TranslationStatus = translationStatus, TranslationError = translationError,
+                IfcPreviewUrn = ifcPreviewUrn, IfcDerivativeUrn = ifcDerivativeUrn,
+                IfcTranslationStatus = ifcTranslationStatus, IfcTranslationError = ifcTranslationError
             };
             db.ModelVersions.Add(version);
             await Audit(db, model.ProjectId, user, "version.uploaded", modelId, version.Id,
                 new { versionNumber, changeDescription });
+
+            // FR2.4 (specs/02): checking in a new version auto-releases the uploader's checkout.
+            var checkout = await db.CheckoutStates.FirstOrDefaultAsync(c => c.ModelId == modelId, ct);
+            if (checkout is not null && checkout.CheckedOutById == user.Id)
+            {
+                db.CheckoutStates.Remove(checkout);
+                await Audit(db, model.ProjectId, user, "checkout.released", modelId, version.Id,
+                    new { releasedBy = "checkin" });
+            }
+
             await db.SaveChangesAsync(ct);
 
             return Results.Json(new { version = VersionDto(version) }, JsonOpts, statusCode: 201);
@@ -235,12 +320,87 @@ public static class Endpoints
             try
             {
                 var url = await acc.GetDownloadUrlAsync(project!.AccProjectUrn, version.AccItemVersionUrn, ct);
+
+                // Downloads are part of the "who did what" audit story (FR8.3) — log the read.
+                await Audit(db, version.Model.ProjectId, user, "version.downloaded",
+                    version.ModelId, version.Id, new { version.VersionNumber });
+                await db.SaveChangesAsync(ct);
+
                 return Results.Redirect(url);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                // A 404 from ACC means the file was deleted/moved outside the connector
+                // (specs/04 drift case) — flag it honestly, never delete the version row
+                // or the audit history that references it.
+                if (ex.Message.Contains("(404)"))
+                {
+                    version.AccFileMissing = true;
+                    version.AccMissingDetectedAt = DateTimeOffset.UtcNow;
+                    await Audit(db, version.Model.ProjectId, user, "version.acc_file_missing",
+                        version.ModelId, version.Id, new { version.VersionNumber });
+                    await db.SaveChangesAsync(ct);
+                    return ApiError.NotFound(
+                        $"File for version {version.VersionNumber} no longer exists in ACC (deleted or moved outside the connector). Version history is preserved for audit purposes.");
+                }
                 return ApiError.UpstreamError($"ACC download URL resolution failed: {ex.Message}");
             }
+        });
+
+        // ---- CAD visualization (specs/14) ----
+
+        // On-demand poll (chosen over a background worker for v1 simplicity, per spec's
+        // open question) — dashboard calls this while status is Pending; updates the
+        // stored status in place so subsequent loads don't need to re-poll a finished job.
+        api.MapGet("/versions/{versionId:guid}/translation-status", async (
+            Guid versionId, ConnectorDbContext db, CurrentUserService current,
+            ModelDerivativeClient derivative, CancellationToken ct) =>
+        {
+            var version = await db.ModelVersions.Include(v => v.Model)
+                .FirstOrDefaultAsync(v => v.Id == versionId, ct);
+            if (version is null) return ApiError.NotFound($"Version {versionId} not found.");
+
+            var user = await current.GetUserAsync(ct);
+            if (user is null) return ApiError.Unauthenticated();
+            if (await current.GetRoleAsync(user.Id, version.Model!.ProjectId, ct) is null)
+                return ApiError.Forbidden();
+
+            var changed = false;
+            if (version.DerivativeUrn is not null && version.TranslationStatus is CadTranslationStatus.Pending)
+            {
+                var result = await derivative.GetTranslationStatusAsync(version.DerivativeUrn, ct);
+                version.TranslationStatus = result.Status switch
+                {
+                    "success" => CadTranslationStatus.Success,
+                    "failed" or "timeout" => CadTranslationStatus.Failed,
+                    _ => CadTranslationStatus.Pending // pending/inprogress — still working
+                };
+                version.TranslationError = result.ErrorMessage;
+                changed = true;
+            }
+            if (version.IfcDerivativeUrn is not null && version.IfcTranslationStatus is CadTranslationStatus.Pending)
+            {
+                var result = await derivative.GetTranslationStatusAsync(version.IfcDerivativeUrn, ct);
+                version.IfcTranslationStatus = result.Status switch
+                {
+                    "success" => CadTranslationStatus.Success,
+                    "failed" or "timeout" => CadTranslationStatus.Failed,
+                    _ => CadTranslationStatus.Pending
+                };
+                version.IfcTranslationError = result.ErrorMessage;
+                changed = true;
+            }
+            if (changed) await db.SaveChangesAsync(ct);
+
+            return Results.Json(new
+            {
+                status = version.TranslationStatus?.ToString(),
+                derivativeUrn = version.TranslationStatus == CadTranslationStatus.Success ? version.DerivativeUrn : null,
+                error = version.TranslationError,
+                ifcStatus = version.IfcTranslationStatus?.ToString(),
+                ifcDerivativeUrn = version.IfcTranslationStatus == CadTranslationStatus.Success ? version.IfcDerivativeUrn : null,
+                ifcError = version.IfcTranslationError
+            }, JsonOpts);
         });
     }
 
@@ -288,7 +448,12 @@ public static class Endpoints
         sourceTool = v.SourceTool, sourceToolVersion = v.SourceToolVersion,
         reviewStatus = v.ReviewStatus.ToString(), fileSizeBytes = v.FileSizeBytes,
         metadata = v.MetadataJson is null ? (JsonElement?)null : JsonSerializer.Deserialize<JsonElement>(v.MetadataJson),
-        parseError = v.ParseError
+        parseError = v.ParseError,
+        accFileMissing = v.AccFileMissing, accMissingDetectedAt = v.AccMissingDetectedAt,
+        translationStatus = v.TranslationStatus?.ToString(), derivativeUrn = v.DerivativeUrn,
+        translationError = v.TranslationError,
+        ifcTranslationStatus = v.IfcTranslationStatus?.ToString(), ifcDerivativeUrn = v.IfcDerivativeUrn,
+        ifcTranslationError = v.IfcTranslationError
     };
 }
 

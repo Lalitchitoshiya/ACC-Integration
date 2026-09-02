@@ -43,18 +43,20 @@ public class WsProMetadataExtractor : IMetadataExtractor
     public async Task<MetadataResult> ExtractAsync(Stream package, string fileName, CancellationToken ct)
     {
         var ext = Path.GetExtension(fileName).ToLowerInvariant();
-        if (ext != ".csv")
-            return new MetadataResult(null,
-                $"Unsupported package format '{ext}' — WS Pro extractor currently parses the Ruby-script CSV export.");
-
         try
         {
-            return new MetadataResult(await ParseAsync(package, ct), null);
+            return ext switch
+            {
+                ".csv" => new MetadataResult(await ParseAsync(package, ct), null),
+                ".inp" => new MetadataResult(InpParser.Parse(new StreamReader(package)), null),
+                _ => new MetadataResult(null,
+                    $"Unsupported package format '{ext}' — supported: .csv (WS Pro script export), .inp (EPANET).")
+            };
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // Never throw for bad input (spec 01 FR1.4): storage proceeds, metadata doesn't.
-            return new MetadataResult(null, $"WS Pro export parse failed: {ex.Message}");
+            return new MetadataResult(null, $"Export parse failed: {ex.Message}");
         }
     }
 
