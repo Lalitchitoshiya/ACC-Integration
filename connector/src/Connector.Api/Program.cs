@@ -182,8 +182,21 @@ app.MapGet("/api/v1/aps/status", async (ApsTokenService aps, CancellationToken c
 // hardening step, not required for this to work.
 app.MapGet("/api/v1/aps/viewer-token", async (ApsTokenService aps, CancellationToken ct) =>
 {
-    var token = await aps.GetTwoLeggedTokenAsync(ct);
-    return Results.Json(new { access_token = token, token_type = "Bearer", expires_in = 3300 });
+    // Same token the uploader and poller use — see ApsTokenService.GetAccessTokenAsync
+    // for why handing the Viewer the 2-legged token alone produced a 401 on manifests
+    // the poller had just marked Success.
+    var (token, expiresIn, userContext) = await aps.GetAccessTokenAsync(ct);
+    // Derivatives of files in an ACC WIP bucket are readable only in user context — the
+    // app token gets a bare 401 from the Viewer. When the user's sign-in has lapsed, say
+    // exactly that rather than hand back a token guaranteed to fail.
+    if (!userContext && aps.UserAuthorizationExpired)
+        return Results.Json(new
+        {
+            error = "user_authorization_required",
+            message = "ACC sign-in has expired. Sign in again, then reopen the 3D view.",
+            login = "/api/auth/login"
+        }, statusCode: 401);
+    return Results.Json(new { access_token = token, token_type = "Bearer", expires_in = expiresIn, user_context = userContext });
 });
 
 app.Run();

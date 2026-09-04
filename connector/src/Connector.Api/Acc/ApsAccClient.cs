@@ -167,9 +167,7 @@ public class ApsAccClient(ApsTokenService tokens, IHttpClientFactory httpFactory
     private async Task<HttpClient> AuthedClientAsync(CancellationToken ct)
     {
         var http = httpFactory.CreateClient("aps");
-        var token = tokens.UserAuthorized
-            ? await tokens.GetThreeLeggedTokenAsync(ct)
-            : await tokens.GetTwoLeggedTokenAsync(ct);
+        var (token, _, _) = await tokens.GetAccessTokenAsync(ct);
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         return http;
     }

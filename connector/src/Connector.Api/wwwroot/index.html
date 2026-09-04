@@ -100,12 +100,14 @@
 <!-- specs/14-cad-visualization.md: real Autodesk Viewer, loaded from the DXF's
      Model Derivative translation — a genuine interactive CAD view, not a static image. -->
 <div id="viewer-modal" style="display:none;position:fixed;inset:0;background:rgba(11,31,58,.75);z-index:50">
-  <div style="background:#fff;border-radius:12px;max-width:1000px;margin:4vh auto;padding:18px 22px">
+  <!-- Wide: the model browser and property panel dock inside the canvas, so a narrow
+       modal leaves almost nothing for the model itself. -->
+  <div style="background:#fff;border-radius:12px;max-width:1500px;margin:3vh auto;padding:16px 20px">
     <div class="row-flex" style="justify-content:space-between;margin-bottom:8px">
       <b id="viewer-title">3D View</b>
       <button class="btn" onclick="closeViewer()">Close</button>
     </div>
-    <div id="viewer-canvas" style="width:100%;height:70vh;background:#f8fafc;border:1px solid var(--line);border-radius:8px;position:relative"></div>
+    <div id="viewer-canvas" style="width:100%;height:80vh;background:#f8fafc;border:1px solid var(--line);border-radius:8px;position:relative"></div>
   </div>
 </div>
 
@@ -257,9 +259,39 @@ const LINK_TABLES = ['wn_pipe', 'wn_valve', 'wn_float_valve', 'wn_non_return_val
 // ---- 3D View: real Autodesk Viewer — IFC derivative (property-exact) preferred,
 // DXF as the schematic variant. Same viewer either way, just a different URN. ----
 let viewerInstance = null, viewerInitialized = false;
+
+// The same extension set ACC's own viewer runs. All of these ship inside
+// viewer3D.min.js — nothing extra is downloaded. Without them GuiViewer3D starts
+// with a bare toolbar, which is the whole reason our 3D view looked poorer than
+// ACC's despite rendering the identical SVF2 derivative.
+const VIEWER_EXTENSIONS = [
+  'Autodesk.DocumentBrowser',    // model browser tree
+  'Autodesk.PropertiesManager',  // property panel — where our Pset_ACCWater* groups appear
+  'Autodesk.Measure',
+  'Autodesk.Section',
+  'Autodesk.ViewCubeUi',
+  'Autodesk.Explode',
+];
+
+// Fetched per request rather than captured once: the viewer calls this again when
+// the token nears expiry, and a token grabbed at open time would be stale by then.
+async function viewerToken() {
+  const res = await fetch('/api/v1/aps/viewer-token', { headers: hdrs() });
+  if (res.status === 401) {
+    // The user's ACC sign-in has lapsed. The app token cannot read derivatives in an
+    // ACC project, so there is nothing useful to load — send them to sign in instead
+    // of showing an empty canvas and "401 0".
+    const info = await res.json().catch(() => ({}));
+    toast(info.message || 'ACC sign-in required — sign in, then reopen the 3D view.', false);
+    window.open(info.login || '/api/auth/login', '_blank');
+    throw new Error('user authorization required');
+  }
+  if (!res.ok) throw new Error('viewer token request failed');
+  return res.json();
+}
+
 async function view3D(versionId, versionNumber, kind) {
   toast('Loading 3D view…');
-  const { access_token, expires_in } = await (await fetch('/api/v1/aps/viewer-token', { headers: hdrs() })).json();
   const versions = await api(`/models/${currentModel}/versions`);
   const v = versions.versions.find(x => x.id === versionId);
   const urn = kind === 'dxf' ? v?.derivativeUrn : (v?.ifcDerivativeUrn || v?.derivativeUrn);
@@ -272,17 +304,45 @@ async function view3D(versionId, versionNumber, kind) {
 
   const options = {
     env: 'AutodeskProduction', api: 'derivativeV2',
-    getAccessToken: (cb) => cb(access_token, expires_in)
+    getAccessToken: async (cb) => {
+      try { const t = await viewerToken(); cb(t.access_token, t.expires_in); }
+      catch { toast('Could not refresh the viewer token', false); }
+    }
   };
+
+  const onDocLoaded = (doc) => {
+    const root = doc.getRoot();
+    // IFC is translated with views ["2d","3d"], so the manifest can carry both and
+    // getDefaultGeometry() is free to hand back a 2D sheet. Ask for the 3D role
+    // explicitly; DXF is 2D-only, where the search finds nothing and the fallback
+    // preserves the previous behaviour exactly.
+    const view = root.search({ type: 'geometry', role: '3d' })[0] || root.getDefaultGeometry();
+    if (!view) return toast('No viewable geometry in this derivative', false);
+    viewerInstance.loadDocumentNode(doc, view);
+  };
+
+  const onGeometryLoaded = () => {
+    viewerInstance.fitToView();
+    // Open the property panel straight away. The hydraulic property sets are the
+    // entire point of the IFC track, and leaving them behind a toolbar button hides
+    // the thing a reviewer opened the model to read.
+    try {
+      const pm = viewerInstance.getExtension('Autodesk.PropertiesManager');
+      if (pm) pm.activate(); else viewerInstance.getPropertyPanel(true).setVisible(true);
+    } catch { /* panel is a convenience — never let it break the load */ }
+  };
+
   const initAndLoad = () => {
     if (!viewerInstance) {
-      viewerInstance = new Autodesk.Viewing.GuiViewer3D($('viewer-canvas'));
+      viewerInstance = new Autodesk.Viewing.GuiViewer3D($('viewer-canvas'),
+        { extensions: VIEWER_EXTENSIONS });
       viewerInstance.start();
+      viewerInstance.addEventListener(Autodesk.Viewing.GEOMETRY_LOADED_EVENT, onGeometryLoaded);
     }
-    Autodesk.Viewing.Document.load(`urn:${urn}`,
-      (doc) => viewerInstance.loadDocumentNode(doc, doc.getRoot().getDefaultGeometry()),
+    Autodesk.Viewing.Document.load(`urn:${urn}`, onDocLoaded,
       (code, msg) => toast(`Viewer load failed: ${msg || code}`, false));
   };
+
   if (!viewerInitialized) {
     Autodesk.Viewing.Initializer(options, () => { viewerInitialized = true; initAndLoad(); });
   } else {
@@ -291,7 +351,9 @@ async function view3D(versionId, versionNumber, kind) {
 }
 function closeViewer() {
   $('viewer-modal').style.display = 'none';
-  if (viewerInstance) { viewerInstance.finish(); viewerInstance = null; viewerInitialized = false; }
+  // Tear down the viewer but NOT the Initializer: it is one-time page-level setup,
+  // and re-running it on every reopen leaks handlers.
+  if (viewerInstance) { viewerInstance.finish(); viewerInstance = null; }
 }
 
 async function viewNetwork(versionId, versionNumber) {
