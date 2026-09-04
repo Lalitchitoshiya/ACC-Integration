@@ -48,11 +48,50 @@ public class ApsTokenService(IConfiguration config, IHttpClientFactory httpFacto
 
     public bool UserAuthorized => UserRefreshToken is not null;
 
+    /// <summary>
+    /// The one token rule for talking to ACC: the user's 3-legged token when someone has
+    /// authorized, otherwise the app's 2-legged token.
+    ///
+    /// This must be the single place the rule lives. The uploader and the translation
+    /// poller each carried their own copy of it, while the Viewer token endpoint always
+    /// returned the 2-legged token — and derivatives of files in an ACC project's WIP
+    /// bucket are only readable in user context. The result was a poller marking a
+    /// manifest Success seconds before the Viewer got a 401 on the identical URL, with
+    /// nothing in either log to connect the two.
+    ///
+    /// ExpiresIn is the real remaining lifetime of whichever token was chosen, so the
+    /// Viewer's refresh callback fires at the right moment rather than on a guess.
+    /// </summary>
+    public async Task<(string Token, int ExpiresInSeconds, bool UserContext)> GetAccessTokenAsync(CancellationToken ct)
+    {
+        if (UserAuthorized)
+        {
+            try
+            {
+                var user = await GetThreeLeggedTokenAsync(ct);
+                return (user, Remaining(_userExpiresAt), true);
+            }
+            catch (InvalidOperationException) when (UserAuthorizationExpired)
+            {
+                // Dead refresh token, already forgotten. Fall through to the app token so
+                // uploads keep working; callers that need user context check the flag.
+            }
+        }
+        var app = await GetTwoLeggedTokenAsync(ct);
+        return (app, Remaining(_expiresAt), false);
+
+        static int Remaining(DateTimeOffset expiresAt) =>
+            (int)Math.Max(60, (expiresAt - DateTimeOffset.UtcNow).TotalSeconds);
+    }
+
     public string BuildAuthorizeUrl()
     {
         var clientId = config["Aps:ClientId"] ?? throw new InvalidOperationException("Aps:ClientId not configured.");
         var callback = config["Aps:CallbackUrl"] ?? throw new InvalidOperationException("Aps:CallbackUrl not configured.");
-        var scopes = Uri.EscapeDataString(config["Aps:UserScopes"] ?? "data:read data:write data:create");
+        // viewables:read lets the embedded Viewer fetch derivative geometry. Scopes are
+        // fixed at authorization time — a refresh grant cannot add one — so a user who
+        // authorized before this line existed must visit /api/auth/login once more.
+        var scopes = Uri.EscapeDataString(config["Aps:UserScopes"] ?? "data:read data:write data:create viewables:read");
         return "https://developer.api.autodesk.com/authentication/v2/authorize" +
                $"?response_type=code&client_id={Uri.EscapeDataString(clientId)}" +
                $"&redirect_uri={Uri.EscapeDataString(callback)}&scope={scopes}";
@@ -67,6 +106,7 @@ public class ApsTokenService(IConfiguration config, IHttpClientFactory httpFacto
             ["redirect_uri"] = config["Aps:CallbackUrl"]!
         }, ct);
         StoreUserToken(json);
+        UserAuthorizationExpired = false;
     }
 
     public async Task<string> GetThreeLeggedTokenAsync(CancellationToken ct)
@@ -76,13 +116,44 @@ public class ApsTokenService(IConfiguration config, IHttpClientFactory httpFacto
         if (UserRefreshToken is null)
             throw new InvalidOperationException("No user authorization yet — visit /api/auth/login first.");
 
-        var json = await TokenRequestAsync(new Dictionary<string, string>
+        JsonDocument json;
+        try
         {
-            ["grant_type"] = "refresh_token",
-            ["refresh_token"] = UserRefreshToken
-        }, ct);
+            json = await TokenRequestAsync(new Dictionary<string, string>
+            {
+                ["grant_type"] = "refresh_token",
+                ["refresh_token"] = UserRefreshToken
+            }, ct);
+        }
+        catch (HttpRequestException ex) when (ex.Message.Contains("invalid_grant"))
+        {
+            // APS rotates refresh tokens on every use, so one consumed by another process
+            // (a second connector instance, a parallel dashboard) is dead for this one, and
+            // they also expire outright. Left in place, a dead token keeps UserAuthorized
+            // true and turns every ACC call — upload, poll, viewer — into a 500 with the
+            // cause buried in a stack trace. Forget it so callers fall back to the app
+            // token and can tell the user precisely what to do.
+            ForgetUserToken();
+            UserAuthorizationExpired = true;
+            throw new InvalidOperationException(
+                "ACC user sign-in has expired — visit /api/auth/login to sign in again.", ex);
+        }
         StoreUserToken(json);
         return _userToken!;
+    }
+
+    /// <summary>True once a stored user authorization has been found dead; cleared by a
+    /// fresh sign-in. Lets the API distinguish "never signed in" from "needs to sign in
+    /// again", which call for different messages.</summary>
+    public bool UserAuthorizationExpired { get; private set; }
+
+    private void ForgetUserToken()
+    {
+        _userToken = null;
+        _userRefreshToken = null;
+        _refreshLoaded = true; // do not re-read the dead token from disk on next access
+        try { if (File.Exists(RefreshTokenPath)) File.Delete(RefreshTokenPath); }
+        catch (IOException) { /* best effort — memory state already cleared */ }
     }
 
     private void StoreUserToken(JsonDocument json)
@@ -140,7 +211,13 @@ public class ApsTokenService(IConfiguration config, IHttpClientFactory httpFacto
                 ["grant_type"] = "client_credentials",
                 // account:read intentionally excluded — needs ACC Account Admin API access
                 // that personal-hub APS apps may lack (AUTH-001); Phase 1 only needs data scopes.
-                ["scope"] = config["Aps:Scopes"] ?? "data:read data:write data:create bucket:create bucket:read"
+                //
+                // viewables:read is what the embedded Viewer needs to fetch a derivative's
+                // manifest and geometry assets. Without it Document.load fails with a bare
+                // 401 and renders an empty canvas — the data scopes are enough to upload a
+                // file and submit a translation, but not to read the result back.
+                ["scope"] = config["Aps:Scopes"]
+                    ?? "data:read data:write data:create bucket:create bucket:read viewables:read"
             });
 
             using var res = await http.SendAsync(req, ct);
